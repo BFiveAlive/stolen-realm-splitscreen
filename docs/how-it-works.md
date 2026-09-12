@@ -129,3 +129,51 @@ should be assumed broken here until proven otherwise.
 `%USERPROFILE%\AppData\LocalLow\...\Player.log` otherwise, and "which instance failed" becomes
 unreadable. `-logFile <path>` per instance fixes it; the mod additionally writes a per-process
 trace under `BepInEx\splitcoop-logs\`.
+
+## Why the UI breaks in a tile, and what fixes it
+
+The canvases are authored against 800x600 and match on **height**:
+
+```
+SCALER 'GUI Manager' mode=ScaleWithScreenSize ref=800x600 match=1.00 -> canvas=2.400
+```
+
+So the canvas scale is the same 2.4 at 1280x1440 as at 2560x1440, and text is not being shrunk.
+What changes is the logical width the layout has: 2560/2.4 = 1067 units on a normal screen, but
+1280/2.4 = 533 in a tile. Half the horizontal room, same everything else.
+
+Two visible consequences, both measured rather than guessed:
+
+- The party list is an `AutoExpandGridLayoutGroup` with `constraint=FixedColumnCount count=2`. It
+  does not draw cells at `cellSize`; it stretches them to fill the row -
+  `(holderWidth - spacing * (columns - 1)) / columns`. At 2560x1440 the holder is 442 units and
+  each card gets 247. In a tile the holder was 176 and the cards were far below anything their
+  contents fit in, so names rendered as "TRB" and "Health" as "Hea".
+- The skill tree simply ran off the edge: four of its eleven trees and the whole left-hand column
+  of skills were outside the screen, and the header labels drew on top of each other.
+
+### The correction
+
+Raise the reference height so the logical width returns to its 16:9 value:
+
+```
+referenceHeight = authoredHeight * (16/9) / screenAspect      // 600 -> 1200 at 1280x1440
+```
+
+The character list holder then measures 442 in a tile - the same number as at 2560x1440 - and every
+horizontal layout lands where it was designed to. The extra goes into logical height, which a tall
+window has to spare.
+
+Two things worth knowing about the approach that did **not** work. Changing
+`matchWidthOrHeight` to match width instead is the obvious move and is not enough: it yields 800
+logical units, better than 533 but still short of 1067, and the party cards came out at 211 units
+where the game gives them 247 - still overlapping. And the authored `cellSize.x` (163.8) is not the
+width the card contents need; it is only what the *Flexible* branch uses to count cells, so it
+makes a poor threshold.
+
+### Screenshots
+
+`ScreenCapture.CaptureScreenshot` from inside the game is the only way to see any of this. A
+desktop capture through GDI (`CopyFromScreen`) returns the wallpaper, because Unity renders into a
+DirectX surface GDI cannot read - which looks exactly like a black or missing window and is easy to
+misread as the game having failed.

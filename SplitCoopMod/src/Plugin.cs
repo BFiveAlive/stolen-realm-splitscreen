@@ -45,6 +45,7 @@ namespace SplitCoopMod
         private string hostIp;
         private bool roguelike;
         private string label;
+        private bool fitDisabled;
 
 
         private void Awake()
@@ -53,12 +54,17 @@ namespace SplitCoopMod
 
             ParseCommandLine();
 
-            if (role == Role.None && !InputIsolation.Wanted)
+            if (role == Role.None && !InputIsolation.Wanted && !UiReport.Enabled && !UiFit.Enabled && !AutoPlay.Enabled)
             {
                 Trace("No -srhost, -srjoin, -srcontroller or -srlistcontrollers argument; staying out of the way.");
                 enabled = false;
                 return;
             }
+
+            // On by default for a split-screen instance: a tiled window is exactly the shape the
+            // fixed column counts get wrong, and the fix is a no-op at ordinary sizes.
+            if (!fitDisabled && role != Role.None)
+                UiFit.Enabled = true;
 
             Trace(Name + " " + Version + " armed as " + role
                   + (role == Role.Join ? " -> " + hostIp : string.Empty)
@@ -83,6 +89,10 @@ namespace SplitCoopMod
                 Runner.Roguelike = roguelike;
                 Runner.Trace = Trace;
                 InputIsolation.Trace = Trace;
+                UiReport.Trace = Trace;
+                UiFit.Trace = Trace;
+                AutoPlay.Trace = Trace;
+                AutoPlay.Shoot = UiReport.Shoot;
 
                 new HarmonyLib.Harmony(Guid).PatchAll(typeof(Runner));
                 Trace("Patched GUIManager.Update; waiting for the main menu.");
@@ -133,6 +143,28 @@ namespace SplitCoopMod
 
                     case "-srlistcontrollers":
                         InputIsolation.ListOnly = true;
+                        break;
+
+                    case "-srdumpui":
+                        UiReport.Enabled = true;
+                        break;
+
+                    case "-srfitui":
+                        UiFit.Enabled = true;
+                        break;
+
+                    case "-srautoplay":
+                        AutoPlay.Enabled = true;
+                        UiReport.Enabled = true;
+                        break;
+
+                    case "-srnofitui":
+                        fitDisabled = true;
+                        break;
+
+                    case "-srshots":
+                        UiReport.Enabled = true;
+                        UiReport.ShotDir = next;
                         break;
                 }
             }

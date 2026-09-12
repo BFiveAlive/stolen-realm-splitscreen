@@ -43,6 +43,39 @@ only global gate is a wait for animations before the turn flips. So the engine a
 players to move and cast simultaneously; in the stock game it is the single shared UI that forces
 them to take turns. Give each player their own client and that restriction goes away.
 
+## Making the UI survive a narrow window
+
+A tiled window is a shape the game was never designed for. Two tiles on a 2560x1440 screen are
+1280x1440 - an aspect of 0.89 where the interface expects 1.78 - and the result is not merely
+small text. Party cards overlapped their own contents ("Health" drawn over "269/269"), and the
+skill tree lost its left-hand column off the edge of the screen along with four of its eleven
+trees.
+
+The cause is how the canvases scale. They are authored against 800x600 and match on **height**, so
+the logical width the layout gets is whatever the aspect ratio leaves over: 1067 units at 16:9, but
+only 533 in a tile. Every horizontal layout is then trying to fit in half the room it was built
+for.
+
+The mod raises the canvas reference height until the logical width comes back to its 16:9 value:
+
+```
+referenceHeight = authoredHeight * (16/9) / screenAspect
+```
+
+At 1280x1440 that is 600 -> 1200, and the layout measures exactly as it does on a normal screen -
+the character list holder comes out 442 units wide in a tile, the same 442 it has at 2560x1440. The
+surplus is spent on logical height, where a tall window has room going spare, so the UI is drawn
+smaller but is complete and correctly laid out rather than clipped.
+
+This is a no-op at 16:9: measured at both 2560x1440 and 1280x720, nothing is changed and the holder
+is 442 either way.
+
+A second, narrower correction sits behind it as a fallback. Some lists are laid out with a fixed
+column count and stretch their cells to fill the row, so a narrow holder yields cards thinner than
+the width their contents need. Where that happens the mod lowers the column count until each card
+is at least as wide as the layout's authored cell. With the canvas correction in place this rarely
+has anything to do, but it covers aspect ratios that were not tested.
+
 ## Requirements
 
 - Stolen Realm on Steam, with Steam running (its networking library is the transport even for a
@@ -120,6 +153,10 @@ Useful on their own if you would rather start instances by hand.
 | `-srmode roguelike` | Roguelike instead of campaign |
 | `-srplayer <label>` | Names this instance's log under `BepInEx\splitcoop-logs\` |
 | `-srlistcontrollers` | Report the joysticks Rewired sees, with their indices, and do nothing else |
+| `-srnofitui` | Leave the UI scaling alone (the corrections above are on by default for a split-screen instance) |
+| `-srdumpui` | Log canvas scalers and grid layouts on each screen - how the UI problems above were found |
+| `-srshots <dir>` | Have the game screenshot itself on each screen. A desktop grab returns the wallpaper here, because Unity draws into a DirectX surface GDI cannot read |
+| `-srautoplay` | Diagnostic: pick the first character, accept, and open the menus, so the in-game screens can be inspected without playing. **Starts a real game - back saves up first** |
 
 Without any of them the mod does nothing at all, so it is safe to leave installed.
 
@@ -136,6 +173,8 @@ Measured on Windows 11, Stolen Realm (Unity 2022.3.62), BepInEx 5.4.23.5:
 | Keyboard/mouse isolation | yes |
 | Input survives losing focus | yes — `ignoreInputWhenAppNotInFocus` defaults to **True**, and is turned off in every instance. Without this every window but the focused one ignores its controller, so this one mattered. |
 | Client retries a too-early connect | yes — forced by starting the client 45s before the host: first attempt failed, retried twice, joined at 62s |
+| UI readable in a tile | yes — verified by screenshot at 1280x1440: party cards and the skill tree render as they do at native, after the canvas correction |
+| UI untouched at 16:9 | yes — no canvas or column change at 2560x1440 or 1280x720 |
 | **Gamepad isolation** | **not verified** — no controller was attached to the test machine. The code path runs and reports `waiting for joystick 0; 0 present`, which is the correct behaviour with none plugged in, but binding a real pad has not been exercised. |
 | **Actual play** | **not verified** — the tests reach the party-select screen and stop. Picking characters, entering combat and two people acting at once needs a human at each seat. |
 
