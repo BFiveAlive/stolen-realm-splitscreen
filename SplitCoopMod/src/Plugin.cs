@@ -55,7 +55,7 @@ namespace SplitCoopMod
 
             if (role == Role.None && !InputIsolation.Wanted)
             {
-                Trace("No -srhost, -srjoin or -srcontroller argument; staying out of the way.");
+                Trace("No -srhost, -srjoin, -srcontroller or -srlistcontrollers argument; staying out of the way.");
                 enabled = false;
                 return;
             }
@@ -129,6 +129,10 @@ namespace SplitCoopMod
 
                     case "-srcontroller":
                         InputIsolation.Requested = next;
+                        break;
+
+                    case "-srlistcontrollers":
+                        InputIsolation.ListOnly = true;
                         break;
                 }
             }

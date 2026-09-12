@@ -35,6 +35,7 @@ namespace SplitCoopMod
         private static int waits;
         private static int polls;
         private static bool reportedSuccess;
+        private static int retries;
 
         private static void Postfix()
         {
@@ -172,6 +173,18 @@ namespace SplitCoopMod
                     reportedSuccess = true;
                     Say("SESSION OK  role=" + Role + " networkId=" + id + " isServer=" + server
                         + " gui=" + state);
+                }
+                else if (Role == Plugin.Role.Join && polls > 0 && polls % 8 == 0 && retries < 5)
+                {
+                    // A client that dialled before the host was listening gets nothing and would
+                    // otherwise sit there forever. How long the host takes to reach the menu varies
+                    // with the machine, so retrying is more reliable than any fixed head start.
+                    retries++;
+                    Say("no network id yet; retrying the connection to " + HostIp
+                        + " (attempt " + (retries + 1) + ")");
+
+                    try { NetworkingManager.Instance.NetworkManager.Connect(HostIp); }
+                    catch (Exception e) { Say("retry threw: " + e.Message); }
                 }
             }
 

@@ -75,7 +75,24 @@ with `-p:GameDir="D:\...\Stolen Realm"` if yours is elsewhere.
 .\tools\Start-SplitScreen.ps1 -Players 2 -Layout Stacked
 ```
 
-The first instance hosts; the rest join `127.0.0.1`. Each lands on the party-select screen, where
+Find your controller indices first, if you have not before — Windows' numbering is not
+necessarily Rewired's, and guessing wrong silently gives two players the same pad:
+
+```powershell
+.	ools\Get-Controllers.ps1
+#   CONTROLLERS 2 joystick(s)
+#     index 0 : Xbox 360 Controller  [Controller (XBOX 360 For Windows)]
+#     index 1 : DualSense Wireless Controller  [Wireless Controller]
+```
+
+And to close a session — several windows, only one focused, so quitting by hand is fiddly:
+
+```powershell
+.	ools\Stop-SplitScreen.ps1
+```
+
+The first instance hosts; the rest join `127.0.0.1`. Start order does not matter much: a client
+that dials before the host is listening retries for about 90 seconds. Each lands on the party-select screen, where
 every player picks their own character with their own controller — the game's existing couch co-op
 flow, which already assigns a character to whichever controller claimed it.
 
@@ -102,6 +119,7 @@ Useful on their own if you would rather start instances by hand.
 | `-srcontroller <n\|keyboard>` | Give this instance one joystick, or keyboard and mouse, and nothing else |
 | `-srmode roguelike` | Roguelike instead of campaign |
 | `-srplayer <label>` | Names this instance's log under `BepInEx\splitcoop-logs\` |
+| `-srlistcontrollers` | Report the joysticks Rewired sees, with their indices, and do nothing else |
 
 Without any of them the mod does nothing at all, so it is safe to leave installed.
 
@@ -116,6 +134,8 @@ Measured on Windows 11, Stolen Realm (Unity 2022.3.62), BepInEx 5.4.23.5:
 | They form a session over loopback | **yes** — host `networkId=0`, client `networkId=1` |
 | Windows tile correctly | yes — verified by window rectangles, `0,0→1280,1440` and `1280,0→2560,1440` |
 | Keyboard/mouse isolation | yes |
+| Input survives losing focus | yes — `ignoreInputWhenAppNotInFocus` defaults to **True**, and is turned off in every instance. Without this every window but the focused one ignores its controller, so this one mattered. |
+| Client retries a too-early connect | yes — forced by starting the client 45s before the host: first attempt failed, retried twice, joined at 62s |
 | **Gamepad isolation** | **not verified** — no controller was attached to the test machine. The code path runs and reports `waiting for joystick 0; 0 present`, which is the correct behaviour with none plugged in, but binding a real pad has not been exercised. |
 | **Actual play** | **not verified** — the tests reach the party-select screen and stop. Picking characters, entering combat and two people acting at once needs a human at each seat. |
 
@@ -154,7 +174,7 @@ same mod and the same arguments.
 
 ```
 SplitCoopMod/     BepInEx mod: the command-line arguments and input isolation
-tools/            launcher, save backup, and the test harnesses used above
+tools/            launcher, controller list, session stop, save backup, test harnesses
 nucleus/          optional Nucleus Co-op handler
 docs/             how the game's multiplayer and UI actually work
 ```
