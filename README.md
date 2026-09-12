@@ -79,7 +79,7 @@ Find your controller indices first, if you have not before — Windows' numberin
 necessarily Rewired's, and guessing wrong silently gives two players the same pad:
 
 ```powershell
-.	ools\Get-Controllers.ps1
+.\tools\Get-Controllers.ps1
 #   CONTROLLERS 2 joystick(s)
 #     index 0 : Xbox 360 Controller  [Controller (XBOX 360 For Windows)]
 #     index 1 : DualSense Wireless Controller  [Wireless Controller]
@@ -88,7 +88,7 @@ necessarily Rewired's, and guessing wrong silently gives two players the same pa
 And to close a session — several windows, only one focused, so quitting by hand is fiddly:
 
 ```powershell
-.	ools\Stop-SplitScreen.ps1
+.\tools\Stop-SplitScreen.ps1
 ```
 
 The first instance hosts; the rest join `127.0.0.1`. Start order does not matter much: a client
@@ -157,8 +157,9 @@ worth a thought before publishing anything built on it.
 **Per-instance overhead is real.** Each client is a full game: roughly 2 GB of memory and most of a
 CPU core. Four players wants a machine with headroom.
 
-**The host must start first.** Clients dial a socket that only exists once the host has reached the
-menu; the launcher's `-HostLeadSeconds` (default 30) covers this.
+**The host must be up before anyone joins** - but not before they start. Clients dial a socket that
+only exists once the host has reached its menu, so the launcher gives the host a head start
+(`-HostLeadSeconds`, default 30) and a client that dials too early retries for about 90 seconds.
 
 ## Nucleus Co-op
 
