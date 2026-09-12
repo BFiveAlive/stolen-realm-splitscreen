@@ -1,0 +1,12 @@
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# Build inputs and scratch work: the game's own assemblies are referenced from the install
+# and must never be redistributed.
+lib/
+*.dll
+decomp/
+scratch/

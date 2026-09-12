@@ -1,0 +1,131 @@
+# How Stolen Realm's multiplayer and UI actually work
+
+Everything below was read out of the game's own assembly (`Assembly-CSharp.dll`, unobfuscated,
+Unity 2022.3 Mono) or measured at runtime. It is the reasoning behind the design in the README.
+
+## Why one process cannot show two players
+
+The interface assumes exactly one local view, in three separate ways.
+
+**One selection.** `GameLogic.instance.CurrentlySelectedCharacter` — 284 references. The whole UI
+reads it: skill bar, targeting, tooltips, character sheet.
+
+**One of everything else.** 88 distinct singleton manager types, among them
+`GUIManager.instance` (742 references), `CurrentCharacterUI.Instance` (127) and
+`CameraController.instance` (80) — the camera itself is a singleton.
+
+**One of each window, enforced by the type system.**
+
+```csharp
+public class LoadableUIWindow<T> : UIWindow
+{
+    public static T Instance { get; set; }   // one slot per window TYPE
+}
+```
+
+34 window types resolve through a static `Instance` — inventory, skill tree, shop, crafting,
+stash, transmog. There is nowhere to put a second inventory, so two players cannot both have one
+open.
+
+Making that per-player means threading a player identity through roughly 1,200 call sites that
+have no parameter for it. Harmony cannot invent context that the call sites never had.
+
+## What the game already does for couch co-op
+
+More than it appears to.
+
+```csharp
+public virtual int ControllerPlayerId { get; set; }                       // on Character
+public Player ControllerPlayer => ReInput.players.GetPlayer(ControllerPlayerId);
+```
+
+Input is **Rewired**, which is built around players owning controllers. At the party-select screen
+`ToggleSelectedCharacter(int controllerPlayerId)` assigns whichever controller pressed the button
+as that character's owner, and `NetworkingManager.MyPartyControllerPlayerIdToCharacters` maps
+controller to character. Disconnecting a pad transfers ownership and reconnecting hands it back.
+
+But it is all one view. `VirtualInput.DefaultPlayer` resolves to the Rewired player owning the
+*currently selected* character, and `GetButtonDownAndSwitchToPlayerCharacter` switches that global
+selection to whoever last pressed something. So stock couch co-op is several controllers taking
+turns driving one screen. Out of combat the camera even centres on the **average** position of all
+local players, which is what forces everyone to stay in frame together.
+
+## Turns belong to a team, not a character
+
+```csharp
+public bool IsMyTurn => GameLogic.instance.currentTeamTurnIndex == TeamIndex;
+```
+
+`CurrentTurnCharacters(teamIndex)` returns every character on the active team. There is no
+initiative order. `Acting` and `Moving` are per-character, and the only place the game consults
+them globally is the turn transition:
+
+```csharp
+// StartNewTurnSequence - waits for animations before flipping the turn
+while (Time.time < maxWaitingTime && (Root.AnyActingCharactersInBattle || Root.AnyMovingCharactersInBattle))
+    yield return new WaitForEndOfFrame();
+```
+
+That is not an input gate. Nothing stops a second character being commanded while the first is
+mid-action — except that there is only one selection and one skill bar to command it with.
+
+## The direct-IP path
+
+The game ships LAN multiplayer, gated behind a menu.
+
+```csharp
+public void Host()
+{
+    EnsureSteamConnection();
+    NetAddress address = NetAddress.AnyIp(9055);
+    SocketManager = SteamNetworkingSockets.CreateNormalSocket(address, this);
+    ServerType = ServerType.Server;
+}
+
+public void HostMultiplayerIP(bool useSaveData)
+{
+    ...
+    NetworkingManager.Instance.NetworkManager.Host();
+    Root.UsingSteam = false;              // <- explicitly not the Steam relay
+    Root.PlayingMultiplayer = true;
+}
+```
+
+A plain UDP socket, and identity is a host-assigned `NetworkId` (`IsServer => NetworkId == 0`), not
+a SteamID. Steam's networking library is still the transport, so Steam must be running, but two
+processes under one login are perfectly distinguishable to the game.
+
+One gate matters: `SteamNetworkingSockets` refuses unauthenticated peers by default, which is every
+peer in a same-machine session. The game's own helper lifts it:
+
+```csharp
+public static void AllowDirectIP()   // MultiplayerFeatureTest
+{
+    // reflection into Facepunch.Steamworks:
+    //   SteamNetworkingUtils.Internal.SetGlobalConfigValueInt32(NetConfig.IP_AllowWithoutAuth, 2)
+}
+```
+
+### The developers left a test harness in the build
+
+`MultiplayerFeatureTest` drives hosting and joining and reports `MPRUN HOST READY` /
+`MPRUN JOIN READY`, and there is a shipped `-autoclient <ip>` command-line flag. Those were the
+obvious things to call — and `HostIP`/`JoinIP` turned out to be `async` over UniTask and never got
+past their first `await` here, emitting none of their own output. So the mod walks the same steps
+synchronously instead, calling exactly the methods those routines call.
+
+## Two traps worth knowing
+
+**Objects this mod creates are never ticked.** A timer on the plugin itself never fires: its
+GameObject is destroyed during the first scene load — `OnDisable` and `OnDestroy` run and `Start`
+never does. Creating a fresh `DontDestroyOnLoad` object does not help either; its `Start` never
+ran. Neither failure throws anything. Meanwhile the game's own components tick normally, which is
+why the mod hangs its clock on a Harmony postfix on `GUIManager.Update`.
+
+Anything relying on Unity's player loop from mod-owned objects — including UniTask continuations —
+should be assumed broken here until proven otherwise.
+
+**Each instance needs its own Unity log.** They all write
+`%USERPROFILE%\AppData\LocalLow\...\Player.log` otherwise, and "which instance failed" becomes
+unreadable. `-logFile <path>` per instance fixes it; the mod additionally writes a per-process
+trace under `BepInEx\splitcoop-logs\`.
