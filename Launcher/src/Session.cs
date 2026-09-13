@@ -26,7 +26,6 @@ internal sealed class Session
     private readonly SessionOptions options;
     private readonly Action<string> log;
     private readonly List<(Seat Seat, Process Process)> started = [];
-    private List<Rectangle> tiles = [];
 
     internal Session(SessionOptions options, Action<string> log)
     {
@@ -70,11 +69,11 @@ internal sealed class Session
         Reset(TraceDir);
         Claims.Reset();
 
-        Rectangle screen = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
-        tiles = TileMath.Compute(options.Seats.Count, options.EffectiveLayout, screen);
-
-        log($"Screen {screen.Width}x{screen.Height}, {options.EffectiveLayout}, "
-            + $"{options.Seats.Count} player(s), {options.Mode}");
+        SeatLayout.Normalize(options);
+        var displays = SeatLayout.Displays();
+        log($"{displays.Count} display(s): "
+            + string.Join("; ", displays.Select(d => $"{d.Number} {d.DeviceName} {d.Bounds}"))
+            + $". {options.Seats.Count} player(s), {options.Mode}.");
 
         foreach (var seat in options.Seats.OrderBy(s => s.Index))
         {
@@ -100,17 +99,17 @@ internal sealed class Session
     /// <summary>
     /// Moves each window to its seat's tile, if it is not there already.
     ///
-    /// Called repeatedly while things start, and again whenever two seats are swapped. A window
-    /// already in place is left alone rather than re-shown, which would otherwise flicker it.
+    /// The layout is worked out afresh each time, so a player moved to another monitor or another
+    /// part of the screen in the launcher is moved in the game as well. A window already in place
+    /// is left alone rather than re-shown, which would otherwise flicker it.
     /// </summary>
     internal void PlaceWindows()
     {
-        if (tiles.Count == 0)
-            return;
+        var layout = SeatLayout.Compute(options);
 
         foreach (var (seat, process) in started)
         {
-            if (HasExited(process))
+            if (HasExited(process) || !layout.TryGetValue(seat, out Rectangle tile))
                 continue;
 
             nint handle;
@@ -126,8 +125,6 @@ internal sealed class Session
 
             if (handle == 0)
                 continue;
-
-            Rectangle tile = tiles[Math.Clamp(seat.Tile, 0, tiles.Count - 1)];
 
             if (Native.GetWindowRect(handle, out var r)
                 && r.Left == tile.X && r.Top == tile.Y
@@ -179,7 +176,7 @@ internal sealed class Session
 
     private void Start(Seat seat)
     {
-        Rectangle tile = tiles[Math.Clamp(seat.Tile, 0, tiles.Count - 1)];
+        Rectangle tile = SeatLayout.Compute(options)[seat];
         var psi = new ProcessStartInfo(options.ExePath)
         {
             WorkingDirectory = options.GameDir,
@@ -194,11 +191,12 @@ internal sealed class Session
 
         string Int(int value) => value.ToString(CultureInfo.InvariantCulture);
 
+        // No -monitor: Unity's monitor numbering is its own, and the window is moved to exactly
+        // the right place by SetWindowPos as soon as it appears, on whichever display that is.
         Add("-screen-fullscreen", "0",
             "-screen-width", Int(tile.Width),
             "-screen-height", Int(tile.Height),
             "-popupwindow",                    // borderless, so the tiles meet without chrome
-            "-monitor", "1",
             "-logFile", Path.Combine(WorkDir, seat.Label + ".log"),
             "-srplayer", seat.Label,
             "-srmode", options.Mode == GameMode.Roguelike ? "roguelike" : "campaign",

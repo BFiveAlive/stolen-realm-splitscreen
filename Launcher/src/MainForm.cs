@@ -117,6 +117,38 @@ internal sealed class MainForm : Form
         choices.Controls.Add(Group("Game", modeFlow));
         choices.Controls.Add(Group("Screen layout", layoutBox));
 
+        // Shortcuts for the two arrangements people want most. Anything else - two players sharing
+        // one monitor while a third has the other - is a drag in the picture below.
+        var displays = SeatLayout.Displays();
+        if (displays.Count > 1)
+        {
+            var oneEach = MakeButton("One each", 104, primary: false);
+            var allOnMain = MakeButton("All on main", 116, primary: false);
+
+            foreach (var button in new[] { oneEach, allOnMain })
+            {
+                button.Height = 36;
+                button.Margin = new Padding(0, 0, 6, 0);
+            }
+
+            oneEach.Click += (_, _) =>
+            {
+                SeatLayout.OneDisplayEach(options);
+                SeatsRearranged("Gave each player their own display.");
+            };
+            allOnMain.Click += (_, _) =>
+            {
+                var main = SeatLayout.Displays().FirstOrDefault(d => d.Primary) ?? SeatLayout.Displays()[0];
+                SeatLayout.AllOn(options, main.DeviceName);
+                SeatsRearranged("Put every player on the main display.");
+            };
+
+            var monitorsFlow = Row();
+            monitorsFlow.Controls.Add(oneEach);
+            monitorsFlow.Controls.Add(allOnMain);
+            choices.Controls.Add(Group($"Monitors ({displays.Count})", monitorsFlow));
+        }
+
         // ---------------------------------------------------------------- game folder
         gameDirBox = new TextBox
         {
@@ -150,7 +182,21 @@ internal sealed class MainForm : Form
             StatusFor = seat => verdicts.TryGetValue(seat.Label, out string? v) ? v : null
         };
         panel.SeatClicked += OnSeatClicked;
-        panel.SeatsSwapped += OnSeatsSwapped;
+        panel.SeatsSwapped += (a, b) =>
+        {
+            SeatLayout.Swap(a, b);
+            SeatsRearranged($"Swapped player {a.Index + 1} and player {b.Index + 1}.");
+        };
+        panel.SeatMovedBeside += (seat, target, after) =>
+        {
+            SeatLayout.MoveBeside(options, seat, target, after);
+            SeatsRearranged($"Player {seat.Index + 1} now shares a screen with player {target.Index + 1}.");
+        };
+        panel.SeatMovedToDisplay += (seat, display) =>
+        {
+            SeatLayout.MoveTo(options, seat, display.DeviceName, int.MaxValue);
+            SeatsRearranged($"Moved player {seat.Index + 1} to display {display.Number}.");
+        };
 
         hintLabel = new Label
         {
@@ -321,14 +367,19 @@ internal sealed class MainForm : Form
         }
     }
 
-    private void OnSeatsSwapped(Seat a, Seat b)
+    /// <summary>
+    /// After any drag in the seating plan. With games running the windows follow straight away -
+    /// including onto another monitor - so the picture and the screens never disagree.
+    /// </summary>
+    private void SeatsRearranged(string message)
     {
-        (a.Tile, b.Tile) = (b.Tile, a.Tile);
         session?.PlaceWindows();
         panel.Invalidate();
 
         if (session is not null)
-            Log($"Swapped player {a.Index + 1} and player {b.Index + 1}'s windows.");
+            Log(message);
+        else
+            Settings.Save(options);
     }
 
     // -------------------------------------------------------------------- launch
@@ -551,8 +602,9 @@ internal sealed class MainForm : Form
     {
         if (session is null)
         {
-            hintLabel.Text = "Click a screen to switch it between a controller and keyboard & mouse. "
-                           + "Drag one screen onto another to swap them. Press Launch when everyone is ready.";
+            hintLabel.Text = "Click a player to switch between controller and keyboard & mouse. Drag a player onto another "
+                           + "to swap, onto the edge of one to share that screen, or onto an empty monitor. "
+                           + "Press Launch when everyone is ready.";
             return;
         }
 

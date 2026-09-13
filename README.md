@@ -12,8 +12,16 @@ Run **`StolenRealmSplitScreen.exe`**. No scripts, no command lines.
 
 1. **Pick the number of players and the game** — Campaign or Roguelike — and, if you like, the
    screen layout.
-2. **Set up the seats.** The picture of your screen shows one tile per player. Click a tile to
-   switch it between a controller and keyboard & mouse. Drag one tile onto another to swap them.
+2. **Set up the seats.** The picture shows every monitor you have, with one tile per player.
+   Click a player to switch them between a controller and keyboard & mouse. Then drag:
+   - onto the **middle** of another player to swap places, even across monitors;
+   - onto the **edge** of another player to share that screen with them, on that side;
+   - onto an **empty monitor** (or the empty corner of a three-player grid) to go there.
+
+   So two players and two monitors can have one each or share one, and three players can split
+   one monitor while the third has the other to themselves. With more than one monitor there are
+   also **One each** and **All on main** shortcuts. Each monitor is split automatically for the
+   players on it, side by side on a landscape screen and stacked on a portrait one.
 3. **Press Launch.** The games start, join each other and fill their tiles.
 4. **Claim your controllers.** The launcher stays on top and highlights one screen at a time:
    whoever is sitting there presses any button on their pad, and it appears on their tile. Click

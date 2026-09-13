@@ -46,11 +46,142 @@ namespace SplitCoopMod
             }
         }
 
+        /// <summary>
+        /// -srautoplay creation: open character creation instead of starting a game, and report
+        /// what it shows. Creation is where players spend their first attribute points, and it is
+        /// reached from party select, so this needs no save changes at all.
+        /// </summary>
+        internal static bool CreationOnly;
+
+        private enum CreationStep { WaitForSelect, Open, Report, Done }
+
+        private static CreationStep creation = CreationStep.WaitForSelect;
+        private static int creationReports;
+
+        private static void AdvanceCreation(GUIManager gui)
+        {
+            switch (creation)
+            {
+                case CreationStep.WaitForSelect:
+                    if (gui.CurrentGuiState == GUIState.CreatingCharacter)
+                    {
+                        Say("already in character creation");
+                        nextAt = Time.realtimeSinceStartup + 8f;
+                        creation = CreationStep.Report;
+                        return;
+                    }
+
+                    if (gui.CurrentGuiState != GUIState.ChoosingCharacter || CharacterChoiceManager.Instance == null)
+                    {
+                        Bored("party select");
+                        return;
+                    }
+
+                    nextAt = Time.realtimeSinceStartup + 4f;
+                    creation = CreationStep.Open;
+                    return;
+
+                case CreationStep.Open:
+                    CharacterChoiceManager.Instance.CreateNewCharacter();
+                    Say("opened character creation");
+                    nextAt = Time.realtimeSinceStartup + 8f;
+                    creation = CreationStep.Report;
+                    return;
+
+                case CreationStep.Report:
+                    Shoot("Creation");
+                    ReportCreation();
+
+                    // More than once: the session is still settling (a joiner can reconnect), and a
+                    // number that changes between reports is itself the finding.
+                    if (++creationReports >= 3)
+                        creation = CreationStep.Done;
+
+                    nextAt = Time.realtimeSinceStartup + 15f;
+                    return;
+            }
+        }
+
+        private static void ReportCreation()
+        {
+            var pm = PresetManager.Instance;
+            if (pm == null)
+            {
+                Say("CREATION no PresetManager");
+                return;
+            }
+
+            Say("CREATION networkId=" + NetworkingManager.Instance.NetworkManager.NetworkId
+                + " state=" + GUIManager.instance.CurrentGuiState
+                + " creationCharacter{" + DescribeCharacter(pm.CreationCharacter) + "}"
+                + " presetCharacter{" + DescribeCharacter(MainMenu.Instance != null ? MainMenu.Instance.PresetCharacter : null) + "}");
+
+            foreach (var handler in pm.GetComponentsInChildren<PresetAttributeHandler>(includeInactive: true))
+            {
+                var row = handler.transform as RectTransform;
+                var plus = handler.PlusBtn != null ? handler.PlusBtn.transform as RectTransform : null;
+
+                Say("CREATION attr[" + handler.transform.GetSiblingIndex() + "] '" + handler.name + "'"
+                    + " active=" + handler.gameObject.activeInHierarchy
+                    + " row=" + DescribeRect(row)
+                    + " plus=" + DescribeRect(plus)
+                    + " parent='" + (row != null && row.parent != null ? row.parent.name : "?") + "' "
+                    + DescribeRect(row != null ? row.parent as RectTransform : null)
+                    + " parentComponents=" + Components(row != null ? row.parent : null)
+                    + " rowComponents=" + Components(row));
+            }
+        }
+
+        private static string DescribeCharacter(Character c)
+        {
+            if (c == null)
+                return "null";
+
+            return "level=" + Safe(() => c.Level)
+                   + " maxHealth=" + Safe(() => c.MaxHealth)
+                   + " health=" + Safe(() => c.Health)
+                   + " baseHealth=" + Safe(() => c.BaseHealth)
+                   + " maxMana=" + Safe(() => c.MaxMana)
+                   + " isAI=" + Safe(() => c.IsAI)
+                   + " team=" + Safe(() => c.TeamIndex);
+        }
+
+        private static string Safe<T>(Func<T> read)
+        {
+            try { return Convert.ToString(read(), System.Globalization.CultureInfo.InvariantCulture); }
+            catch (Exception e) { return "<" + e.GetType().Name + ">"; }
+        }
+
+        private static string DescribeRect(RectTransform rt)
+        {
+            if (rt == null)
+                return "?";
+
+            return rt.rect.width.ToString("0") + "x" + rt.rect.height.ToString("0")
+                   + "@(" + rt.position.x.ToString("0") + "," + rt.position.y.ToString("0") + ")";
+        }
+
+        private static string Components(Transform t)
+        {
+            if (t == null)
+                return "?";
+
+            return string.Join(",", t.GetComponents<Component>()
+                .Where(x => x != null)
+                .Select(x => x.GetType().Name + (x is Behaviour b && !b.enabled ? "(off)" : string.Empty)));
+        }
+
         private static void Advance()
         {
             var gui = GUIManager.instance;
             if (gui == null)
                 return;
+
+            if (CreationOnly)
+            {
+                AdvanceCreation(gui);
+                return;
+            }
 
             switch (step)
             {

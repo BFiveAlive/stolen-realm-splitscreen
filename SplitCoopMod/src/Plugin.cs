@@ -174,6 +174,9 @@ namespace SplitCoopMod
                     case "-srautoplay":
                         AutoPlay.Enabled = true;
                         UiReport.Enabled = true;
+
+                        // "-srautoplay creation" stops at character creation and changes no saves.
+                        AutoPlay.CreationOnly = string.Equals(next, "creation", StringComparison.OrdinalIgnoreCase);
                         break;
 
                     case "-srnofitui":

@@ -7,7 +7,8 @@ namespace SplitScreenLauncher;
 ///
 /// Controller claims are deliberately not remembered: which pad Rewired calls which can change
 /// between sessions, and a remembered claim that silently points at the wrong pad is worse than
-/// asking everyone to press a button again.
+/// asking everyone to press a button again. Which monitor each player sits at is remembered, and
+/// falls back to the main monitor if that one is not connected.
 /// </summary>
 internal static class Settings
 {
@@ -43,12 +44,34 @@ internal static class Settings
                 && int.TryParse(players, NumberStyles.Integer, CultureInfo.InvariantCulture, out int count))
                 options.SetPlayerCount(Math.Clamp(count, 1, 4));
 
-            if (map.TryGetValue("keyboardseat", out string? keyboard)
-                && int.TryParse(keyboard, NumberStyles.Integer, CultureInfo.InvariantCulture, out int seat))
+            foreach (var seat in options.Seats)
             {
-                foreach (var s in options.Seats)
-                    s.Input = s.Index == seat ? SeatInput.KeyboardAndMouse : SeatInput.Controller;
+                // seat1=KeyboardAndMouse|\\.\DISPLAY2|0
+                if (!map.TryGetValue("seat" + (seat.Index + 1), out string? value))
+                    continue;
+
+                string[] parts = value.Split('|');
+
+                if (parts.Length > 0 && Enum.TryParse(parts[0], true, out SeatInput input))
+                    seat.Input = input;
+
+                if (parts.Length > 1)
+                    seat.Display = parts[1];
+
+                if (parts.Length > 2 && int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out int tile))
+                    seat.Tile = tile;
             }
+
+            // Only one seat may keep the keyboard, whatever the file says.
+            bool keyboardTaken = false;
+            foreach (var seat in options.Seats.Where(s => s.Input == SeatInput.KeyboardAndMouse))
+            {
+                if (keyboardTaken)
+                    seat.Input = SeatInput.Controller;
+                keyboardTaken = true;
+            }
+
+            SeatLayout.Normalize(options);
         }
         catch
         {
@@ -64,16 +87,21 @@ internal static class Settings
         {
             Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
 
-            var keyboard = options.Seats.FirstOrDefault(s => s.Input == SeatInput.KeyboardAndMouse);
-
-            File.WriteAllLines(FilePath,
-            [
+            var lines = new List<string>
+            {
                 "gamedir=" + options.GameDir,
                 "mode=" + options.Mode,
                 "layout=" + options.Layout,
-                "players=" + options.Seats.Count.ToString(CultureInfo.InvariantCulture),
-                "keyboardseat=" + (keyboard?.Index ?? -1).ToString(CultureInfo.InvariantCulture)
-            ]);
+                "players=" + options.Seats.Count.ToString(CultureInfo.InvariantCulture)
+            };
+
+            foreach (var seat in options.Seats)
+            {
+                lines.Add("seat" + (seat.Index + 1) + "=" + seat.Input + "|" + seat.Display + "|"
+                          + seat.Tile.ToString(CultureInfo.InvariantCulture));
+            }
+
+            File.WriteAllLines(FilePath, lines);
         }
         catch
         {

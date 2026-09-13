@@ -6,18 +6,27 @@ namespace SplitScreenLauncher;
 internal enum PanelPhase { Setup, Live }
 
 /// <summary>
-/// A picture of the screen, cut into the tiles the windows will occupy.
+/// A picture of every monitor, cut into the tiles the windows will occupy.
 ///
-/// It is the whole seating plan in one place: click a tile to change how that player plays, drag
-/// one onto another to swap where they sit, and - once the games are running - watch each
-/// player's controller appear on their tile as they press a button on it.
+/// It is the whole seating plan in one place. Click a tile to change how that player plays. Drag a
+/// player onto another player's tile to swap them, onto the edge of one to share that screen, or
+/// onto an empty monitor to give them that monitor. Once the games are running, each player's
+/// controller appears on their tile as they press a button on it.
 /// </summary>
 internal sealed class SeatPanel : Control
 {
+    private enum DropKind { None, Swap, Beside, Display }
+
+    private readonly record struct Drop(DropKind Kind, Seat? Target, bool After, Display? Display, RectangleF Preview);
+
     private readonly System.Windows.Forms.Timer animation = new() { Interval = 40 };
     private readonly Font titleFont = new("Segoe UI Semibold", 15f);
     private readonly Font bodyFont = new("Segoe UI", 10.5f);
     private readonly Font smallFont = new("Segoe UI", 9f);
+    private readonly Font compactTitleFont = new("Segoe UI Semibold", 11f);
+    private readonly Font compactBodyFont = new("Segoe UI", 9f);
+    private readonly Font compactSmallFont = new("Segoe UI", 8f);
+    private readonly Font labelFont = new("Segoe UI Semibold", 8.5f);
 
     private Seat? pressed;
     private Point pressPoint;
@@ -51,18 +60,22 @@ internal sealed class SeatPanel : Control
 
     internal event Action<Seat>? SeatClicked;
 
+    /// <summary>Two players traded places.</summary>
     internal event Action<Seat, Seat>? SeatsSwapped;
 
-    private static Rectangle ScreenBounds => Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
+    /// <summary>A player was dropped on the edge of another's tile: (moved, beside, after it).</summary>
+    internal event Action<Seat, Seat, bool>? SeatMovedBeside;
+
+    /// <summary>A player was dropped on free space on a display.</summary>
+    internal event Action<Seat, Display>? SeatMovedToDisplay;
 
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
             animation.Dispose();
-            titleFont.Dispose();
-            bodyFont.Dispose();
-            smallFont.Dispose();
+            foreach (var font in new[] { titleFont, bodyFont, smallFont, compactTitleFont, compactBodyFont, compactSmallFont, labelFont })
+                font.Dispose();
         }
 
         base.Dispose(disposing);
@@ -70,56 +83,111 @@ internal sealed class SeatPanel : Control
 
     // ------------------------------------------------------------------ geometry
 
-    private RectangleF ScreenArea()
+    /// <summary>Maps screen pixels into the control, fitting every display in at once.</summary>
+    private sealed class Frame
     {
-        Rectangle b = ScreenBounds;
-        RectangleF area = RectangleF.Inflate(ClientRectangle, -12, -12);
+        private readonly Rectangle desktop;
+        private readonly float scale;
+        private readonly PointF origin;
 
-        if (area.Width <= 0 || area.Height <= 0 || b.Width <= 0 || b.Height <= 0)
-            return RectangleF.Empty;
+        internal Frame(List<Display> displays, Rectangle client)
+        {
+            Displays = displays;
+            desktop = displays.Select(d => d.Bounds).Aggregate(Rectangle.Union);
 
-        float scale = Math.Min(area.Width / b.Width, area.Height / b.Height);
-        float w = b.Width * scale, h = b.Height * scale;
+            RectangleF area = RectangleF.Inflate(client, -14, -14);
+            if (area.Width <= 0 || area.Height <= 0 || desktop.Width <= 0 || desktop.Height <= 0)
+                return;
 
-        return new RectangleF(area.X + (area.Width - w) / 2, area.Y + (area.Height - h) / 2, w, h);
+            scale = Math.Min(area.Width / desktop.Width, area.Height / desktop.Height);
+            origin = new PointF(area.X + (area.Width - desktop.Width * scale) / 2,
+                                area.Y + (area.Height - desktop.Height * scale) / 2);
+            Valid = true;
+        }
+
+        internal List<Display> Displays { get; }
+
+        internal bool Valid { get; }
+
+        internal RectangleF Map(Rectangle r) => new(
+            origin.X + (r.X - desktop.X) * scale, origin.Y + (r.Y - desktop.Y) * scale,
+            r.Width * scale, r.Height * scale);
     }
 
-    private List<(Seat Seat, RectangleF Rect)> SeatRects()
+    private Frame CurrentFrame() => new(SeatLayout.Displays(), ClientRectangle);
+
+    private List<(Seat Seat, RectangleF Rect)> SeatRects(Frame frame)
     {
         var result = new List<(Seat, RectangleF)>();
-        if (Options is null)
+        if (Options is null || !frame.Valid)
             return result;
 
-        RectangleF area = ScreenArea();
-        if (area.IsEmpty)
-            return result;
-
-        Rectangle b = ScreenBounds;
-        var tiles = TileMath.Compute(Options.Seats.Count, Options.EffectiveLayout, b);
-        float sx = area.Width / b.Width, sy = area.Height / b.Height;
-
-        foreach (var seat in Options.Seats)
-        {
-            if (seat.Tile < 0 || seat.Tile >= tiles.Count)
-                continue;
-
-            Rectangle t = tiles[seat.Tile];
-            result.Add((seat, new RectangleF(
-                area.X + (t.X - b.X) * sx, area.Y + (t.Y - b.Y) * sy, t.Width * sx, t.Height * sy)));
-        }
+        foreach (var (seat, tile) in SeatLayout.Compute(Options, frame.Displays))
+            result.Add((seat, frame.Map(tile)));
 
         return result;
     }
 
     private Seat? SeatAt(Point point)
     {
-        foreach (var (seat, rect) in SeatRects())
+        foreach (var (seat, rect) in SeatRects(CurrentFrame()))
         {
             if (rect.Contains(point))
                 return seat;
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// What letting go here would do.
+    ///
+    /// The middle of another player's tile swaps with them. The outer band of it - the part nearest
+    /// an edge - puts the dragged player beside them on that side, splitting their screen. Free
+    /// space on a display, which is a whole unused monitor or the empty quarter of a three-player
+    /// grid, adds them to that display.
+    /// </summary>
+    private Drop DropAt(Point point)
+    {
+        if (pressed is null || Options is null)
+            return default;
+
+        var frame = CurrentFrame();
+
+        foreach (var (seat, rect) in SeatRects(frame))
+        {
+            if (!rect.Contains(point))
+                continue;
+
+            if (seat == pressed)
+                return default;
+
+            float dx = (point.X - rect.X) / rect.Width;
+            float dy = (point.Y - rect.Y) / rect.Height;
+            float nearest = Math.Min(Math.Min(dx, 1 - dx), Math.Min(dy, 1 - dy));
+
+            if (nearest >= 0.22f)
+                return new Drop(DropKind.Swap, seat, false, null, rect);
+
+            // Which edge: the preview is the half of the tile the dragged player would take.
+            RectangleF half;
+            bool after;
+            if (nearest == dx) { after = false; half = rect with { Width = rect.Width / 2 }; }
+            else if (nearest == 1 - dx) { after = true; half = rect with { X = rect.X + rect.Width / 2, Width = rect.Width / 2 }; }
+            else if (nearest == dy) { after = false; half = rect with { Height = rect.Height / 2 }; }
+            else { after = true; half = rect with { Y = rect.Y + rect.Height / 2, Height = rect.Height / 2 }; }
+
+            return new Drop(DropKind.Beside, seat, after, null, half);
+        }
+
+        foreach (var display in frame.Displays)
+        {
+            RectangleF rect = frame.Map(display.Bounds);
+            if (rect.Contains(point))
+                return new Drop(DropKind.Display, null, false, display, rect);
+        }
+
+        return default;
     }
 
     // ------------------------------------------------------------------ painting
@@ -131,25 +199,71 @@ internal sealed class SeatPanel : Control
         g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
         g.Clear(BackColor);
 
-        RectangleF area = ScreenArea();
-        if (area.IsEmpty || Options is null)
+        var frame = CurrentFrame();
+        if (!frame.Valid || Options is null)
             return;
 
-        using (var bezel = RoundedRect(RectangleF.Inflate(area, 7, 7), 10))
-        using (var brush = new SolidBrush(Theme.Bezel))
-            g.FillPath(brush, bezel);
-
+        var seats = SeatRects(frame);
         double seconds = Environment.TickCount64 / 1000.0;
+        Drop drop = dragging ? DropAt(dragPoint) : default;
 
-        foreach (var (seat, rect) in SeatRects())
+        foreach (var display in frame.Displays)
+        {
+            RectangleF rect = RectangleF.Inflate(frame.Map(display.Bounds), -4, -4);
+
+            using (var bezel = RoundedRect(rect, 8))
+            using (var brush = new SolidBrush(Theme.Bezel))
+                g.FillPath(brush, bezel);
+
+            bool empty = !Options.Seats.Any(s => SeatLayout.DisplayOf(s, frame.Displays) == display);
+            if (empty)
+            {
+                using var brush = new SolidBrush(Theme.Muted);
+                using var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+                g.DrawString(Phase == PanelPhase.Setup || frame.Displays.Count > 1 ? "No players\nDrag one here" : "No players",
+                    bodyFont, brush, rect, format);
+            }
+        }
+
+        foreach (var (seat, rect) in seats)
         {
             bool source = dragging && pressed == seat;
-            bool target = dragging && pressed is not null && pressed != seat && rect.Contains(dragPoint);
-            DrawSeat(g, seat, RectangleF.Inflate(rect, -3, -3), seconds, source, target);
+            bool swapTarget = drop.Kind == DropKind.Swap && drop.Target == seat;
+            DrawSeat(g, seat, RectangleF.Inflate(rect, -7, -7), seconds, source, swapTarget);
+        }
+
+        if (drop.Kind is DropKind.Beside or DropKind.Display && pressed is not null)
+        {
+            Color colour = Theme.Player(pressed.Index);
+            using var path = RoundedRect(RectangleF.Inflate(drop.Preview, -7, -7), 8);
+            using var fill = new SolidBrush(Color.FromArgb(70, colour));
+            using var pen = new Pen(colour, 3f) { DashStyle = DashStyle.Dash };
+            g.FillPath(fill, path);
+            g.DrawPath(pen, path);
+        }
+
+        // Display labels last, so no tile covers them. One monitor needs no label at all.
+        if (frame.Displays.Count > 1)
+        {
+            foreach (var display in frame.Displays)
+                DrawDisplayLabel(g, display, frame.Map(display.Bounds));
         }
 
         if (dragging && pressed is not null)
             DrawGhost(g, pressed);
+    }
+
+    private void DrawDisplayLabel(Graphics g, Display display, RectangleF rect)
+    {
+        SizeF size = g.MeasureString(display.Label, labelFont);
+        var chip = new RectangleF(rect.X + 12, rect.Y + 10, size.Width + 14, size.Height + 6);
+
+        using (var path = RoundedRect(chip, chip.Height / 2))
+        using (var fill = new SolidBrush(Color.FromArgb(215, Theme.Bezel)))
+            g.FillPath(fill, path);
+
+        using var brush = new SolidBrush(Theme.Muted);
+        g.DrawString(display.Label, labelFont, brush, chip.X + 7, chip.Y + 3);
     }
 
     private void DrawSeat(Graphics g, Seat seat, RectangleF r, double seconds, bool faded, bool dropTarget)
@@ -176,6 +290,13 @@ internal sealed class SeatPanel : Control
         var state = g.Save();
         g.SetClip(r);
 
+        // Small tiles - several monitors drawn at once, or four players on one - get smaller text
+        // rather than text cut off at the tile edge.
+        bool compact = r.Height < 210 || r.Width < 170;
+        Font title = compact ? compactTitleFont : titleFont;
+        Font body = compact ? compactBodyFont : bodyFont;
+        Font small = compact ? compactSmallFont : smallFont;
+
         (string main, string? detail) = Describe(seat, armed);
         bool hasDevice = seat.Input == SeatInput.KeyboardAndMouse || seat.ControllerName is not null
                          || Phase == PanelPhase.Setup;
@@ -185,28 +306,29 @@ internal sealed class SeatPanel : Control
         if (faded)
             iconColour = Color.FromArgb(90, iconColour);
 
-        float iconSize = Math.Clamp(Math.Min(r.Width, r.Height) * 0.3f, 30f, 96f);
+        float iconSize = Math.Clamp(Math.Min(r.Width, r.Height) * 0.3f, compact ? 22f : 30f, 96f);
         float iconHeight = iconSize * 0.6f;
-        float titleH = titleFont.GetHeight(g), bodyH = bodyFont.GetHeight(g), smallH = smallFont.GetHeight(g);
+        float gap = compact ? 6 : 12;
+        float titleH = title.GetHeight(g), bodyH = body.GetHeight(g), smallH = small.GetHeight(g);
 
-        float total = titleH + 12 + iconHeight + 14 + bodyH + (detail is null ? 0 : 4 + smallH * 2);
-        float y = r.Y + Math.Max(6, (r.Height - total) / 2);
+        float total = titleH + gap + iconHeight + gap + bodyH + (detail is null ? 0 : 4 + smallH * 2);
+        float y = r.Y + Math.Max(4, (r.Height - total) / 2);
 
-        DrawCentred(g, $"Player {seat.Index + 1}", titleFont, faded ? Color.FromArgb(90, colour) : colour, r, y, titleH + 2);
-        y += titleH + 12;
+        DrawCentred(g, $"Player {seat.Index + 1}", title, faded ? Color.FromArgb(90, colour) : colour, r, y, titleH + 2);
+        y += titleH + gap;
 
         var centre = new PointF(r.X + r.Width / 2, y + iconHeight / 2);
         if (seat.Input == SeatInput.KeyboardAndMouse)
             DrawKeyboard(g, centre, iconSize, iconColour);
         else
             DrawGamepad(g, centre, iconSize, iconColour);
-        y += iconHeight + 14;
+        y += iconHeight + gap;
 
-        DrawCentred(g, main, bodyFont, faded ? Theme.Muted : Theme.Text, r, y, bodyH + 2);
+        DrawCentred(g, main, body, faded ? Theme.Muted : Theme.Text, r, y, bodyH + 2);
         y += bodyH + 4;
 
         if (detail is not null)
-            DrawCentred(g, detail, smallFont, Theme.Muted, r, y, smallH * 2 + 2);
+            DrawCentred(g, detail, small, Theme.Muted, r, y, smallH * 2 + 2);
 
         g.Restore(state);
     }
@@ -271,7 +393,7 @@ internal sealed class SeatPanel : Control
             Trimming = StringTrimming.EllipsisCharacter
         };
 
-        g.DrawString(text, font, brush, new RectangleF(bounds.X + 8, y, bounds.Width - 16, height), format);
+        g.DrawString(text, font, brush, new RectangleF(bounds.X + 6, y, bounds.Width - 12, height), format);
     }
 
     private static void DrawGamepad(Graphics g, PointF c, float size, Color colour)
@@ -402,8 +524,9 @@ internal sealed class SeatPanel : Control
             return;
 
         Seat? source = pressed;
-        Seat? target = SeatAt(e.Location);
+        Drop drop = dragging ? DropAt(e.Location) : default;
         bool wasDragging = dragging;
+        Seat? under = wasDragging ? null : SeatAt(e.Location);
 
         pressed = null;
         dragging = false;
@@ -412,14 +535,24 @@ internal sealed class SeatPanel : Control
         if (source is null)
             return;
 
-        if (wasDragging)
+        if (!wasDragging)
         {
-            if (target is not null && target != source)
-                SeatsSwapped?.Invoke(source, target);
+            if (under == source)
+                SeatClicked?.Invoke(source);
+            return;
         }
-        else if (target == source)
+
+        switch (drop.Kind)
         {
-            SeatClicked?.Invoke(source);
+            case DropKind.Swap when drop.Target is not null:
+                SeatsSwapped?.Invoke(source, drop.Target);
+                break;
+            case DropKind.Beside when drop.Target is not null:
+                SeatMovedBeside?.Invoke(source, drop.Target, drop.After);
+                break;
+            case DropKind.Display when drop.Display is not null:
+                SeatMovedToDisplay?.Invoke(source, drop.Display);
+                break;
         }
     }
 }

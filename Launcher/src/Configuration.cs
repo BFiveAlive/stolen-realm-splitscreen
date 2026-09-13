@@ -14,15 +14,18 @@ internal enum SeatInput
     KeyboardAndMouse
 }
 
-/// <summary>One player: one window, one tile of the screen, one input device.</summary>
+/// <summary>One player: one window, one tile of a screen, one input device.</summary>
 internal sealed class Seat
 {
     internal required int Index { get; init; }
 
     internal SeatInput Input { get; set; } = SeatInput.Controller;
 
+    /// <summary>The monitor this player's window is on, by Windows device name.</summary>
+    internal string Display { get; set; } = string.Empty;
+
     /// <summary>
-    /// Which tile of the screen this player's window occupies.
+    /// This player's position among the players sharing their display.
     ///
     /// Separate from <see cref="Index"/> because the index is also who hosts and which window a
     /// claim belongs to, and neither of those should change just because two people swapped seats.
@@ -52,8 +55,8 @@ internal sealed class SessionOptions
     /// <summary>
     /// Grows or shrinks the seat list, keeping what the player already set up.
     ///
-    /// Changing the player count is the first thing anyone touches and it should not throw away a
-    /// controller somebody has already claimed for player 1.
+    /// Changing the player count is the first thing anyone touches and it should not throw away
+    /// which monitor player 1 was put on.
     /// </summary>
     internal void SetPlayerCount(int count)
     {
@@ -64,23 +67,20 @@ internal sealed class SessionOptions
         {
             // Player 1 defaults to mouse and keyboard: it is the seat that drives menus most
             // comfortably, and it means this works with no controllers plugged in at all.
+            // A new player joins whichever display the previous player is on, after them.
+            var previous = Seats.LastOrDefault();
+
             Seats.Add(new Seat
             {
                 Index = Seats.Count,
-                Input = Seats.Count == 0 ? SeatInput.KeyboardAndMouse : SeatInput.Controller
+                Input = Seats.Count == 0 ? SeatInput.KeyboardAndMouse : SeatInput.Controller,
+                Display = previous?.Display ?? string.Empty,
+                Tile = int.MaxValue
             });
         }
 
-        // A different player count is a different set of tiles, so earlier swaps no longer mean
-        // anything; start everyone back in order.
-        foreach (var seat in Seats)
-            seat.Tile = seat.Index;
+        SeatLayout.Normalize(this);
     }
-
-    internal TileLayout EffectiveLayout =>
-        Layout != TileLayout.Auto ? Layout
-        : Seats.Count <= 2 ? TileLayout.SideBySide
-        : TileLayout.Grid;
 
     internal string ExePath => Path.Combine(GameDir, "Stolen Realm.exe");
 
