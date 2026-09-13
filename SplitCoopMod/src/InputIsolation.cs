@@ -74,6 +74,14 @@ namespace SplitCoopMod
                 if (applied)
                     return;
 
+                // Not while the game is still starting. Taking the keyboard and mouse away from
+                // Rewired's player 0 before the game has built its network layer and main menu
+                // stops it initialising at all: thousands of errors a minute, and in a session,
+                // stats and menus that make no sense. Measured: a window given its pad at 8s broke
+                // every time; one given its pad after its session formed was fine.
+                if (!GameInitialised())
+                    return;
+
                 // "claim" means nobody has chosen a device for this window yet: the player is about
                 // to choose it by pressing a button on it. Until they do there is nothing to assign.
                 if (SeatClaim.Enabled)
@@ -120,6 +128,49 @@ namespace SplitCoopMod
                 Say("could not isolate input: " + e.Message);
                 applied = true;
             }
+        }
+
+        private static float initialisedSince = -1f;
+        private static bool announcedWait;
+
+        /// <summary>
+        /// True once the game has finished starting, plus a few seconds to settle: the main menu
+        /// exists and the network layer's Root has been created. Root is the thing found missing in
+        /// every broken start, so it is the thing waited for.
+        /// </summary>
+        private static bool GameInitialised()
+        {
+            bool ready;
+            try
+            {
+                ready = GUIManager.instance != null
+                        && MainMenu.Instance != null
+                        && NetworkingManager.Instance != null
+                        && NetworkingManager.Instance.NetworkManager != null
+                        && NetworkingManager.Instance.NetworkManager.Root != null;
+            }
+            catch
+            {
+                ready = false;
+            }
+
+            if (!ready)
+            {
+                initialisedSince = -1f;
+
+                if (!announcedWait)
+                {
+                    announcedWait = true;
+                    Say("holding controller assignment until the game has finished starting");
+                }
+
+                return false;
+            }
+
+            if (initialisedSince < 0f)
+                initialisedSince = Time.realtimeSinceStartup;
+
+            return Time.realtimeSinceStartup - initialisedSince >= 3f;
         }
 
         private static void OnControllerChanged(ControllerStatusChangedEventArgs args)
@@ -177,22 +228,26 @@ namespace SplitCoopMod
             // Off first, so nothing this method does gets undone a frame later.
             ReInput.configuration.autoAssignJoysticks = false;
 
-            foreach (Player player in ReInput.players.Players)
-                player.controllers.ClearAllControllers();
+            // Only gamepads are moved. An earlier version cleared every controller, keyboard and
+            // mouse included, and the game does not survive player 0 losing its keyboard: the
+            // next thing it set up (the session, and before that the whole start) failed with
+            // errors every frame. Keyboard and mouse stay exactly where the game put them.
+            foreach (Player player in ReInput.players.AllPlayers)
+                player.controllers.ClearControllersOfType(ControllerType.Joystick);
 
             Player mine = ReInput.players.GetPlayer(0);
+            mine.controllers.hasKeyboard = true;
+            mine.controllers.hasMouse = true;
 
             if (keyboard)
             {
-                mine.controllers.hasKeyboard = true;
-                mine.controllers.hasMouse = true;
-                Say("input isolated: keyboard and mouse only");
+                Say("input isolated: keyboard and mouse, no gamepads");
             }
             else
             {
                 Joystick joystick = ReInput.controllers.Joysticks[index];
                 mine.controllers.AddController(joystick, removeFromOtherPlayers: true);
-                Say("input isolated: joystick " + index + " (" + joystick.name + ") only");
+                Say("input isolated: joystick " + index + " (" + joystick.name + ") only, keyboard and mouse left in place");
             }
         }
 

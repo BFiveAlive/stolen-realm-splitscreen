@@ -395,6 +395,17 @@ internal sealed class MainForm : Form
 
         try
         {
+            if (GameSettingsRepair.RepairControllerAssignments() is { } repaired)
+                Log(repaired);
+        }
+        catch (Exception ex)
+        {
+            // Worth knowing about, but never a reason not to launch.
+            Log("Could not check the game's saved controller assignments: " + ex.Message);
+        }
+
+        try
+        {
             if (ModInstaller.EnsureInstalled(options) is { } installed)
                 Log(installed);
         }

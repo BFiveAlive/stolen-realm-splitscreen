@@ -178,6 +178,59 @@ desktop capture through GDI (`CopyFromScreen`) returns the wallpaper, because Un
 DirectX surface GDI cannot read - which looks exactly like a black or missing window and is easy to
 misread as the game having failed.
 
+## The controller change that broke the game
+
+After the first real session with two gamepads, Stolen Realm stopped starting properly on the
+test machine - every launch, with every mod disabled, and launched through Steam. About 14,000
+`NullReferenceException`s a minute, every one of them tracing back to
+`NetworkingManager.Instance.NetworkManager.Root` never being created. In the session itself, the
+second player's window had been broken the same way from the start, which is what produced a
+character with ~1,000 health on one screen and ~120 in play, and a stats panel whose + buttons all
+sat under Might.
+
+Two things combined:
+
+**Removing player 0's keyboard and mouse.** Each window used to clear every controller from
+every Rewired player and then give player 0 one gamepad - which also took player 0's keyboard
+and mouse away. The game does not survive that before it has set up its session. Measured
+directly, with the crash reporter swallowing the original exception each time:
+
+| Window | Keyboard and mouse | When the pad was assigned | Result |
+|---|---|---|---|
+| pad window | removed | 8-12s, during start-up | broken, every frame |
+| pad window | removed | 17s, after the main menu but before hosting | broken, right after "chose campaign mode" |
+| pad window | removed | 24s, after its session had formed | fine |
+| keyboard window | kept | any time | fine |
+| pad window | **kept** | after the main menu | **fine: hosted, session formed, character creation opened, 0 errors** |
+
+So windows now move only gamepads: every player's joysticks are cleared, player 0 gets its own
+pad, and the keyboard and mouse stay where the game put them. As a precaution controllers are
+also left alone until the main menu and the network Root exist, plus a few seconds.
+
+**Persistence.** Rewired's `UserDataStore_PlayerPrefs.SaveControllerAssignments` writes who owns
+which device to `HKCU\Software\Burst2Flame Entertainment\Stolen Realm` and loads it at the next
+start. A split-screen window's "player 0 has one pad and no keyboard" was saved, so every later
+launch recreated the broken start. Split-screen windows now never save controller assignments,
+and the launcher deletes the damaged value if it finds it. Deleting that one value was the whole
+repair - saves were untouched, and setting aside the day's save files first made no difference.
+
+## Saves with several windows
+
+Read from the game's save code. Every save is `WriteAllText(X.temp)` then
+`File.Replace(X.temp, X, X.backup)`, which is atomic for a single writer.
+
+- **Quest files** (`QuestSaveCampaign.json`, `QuestSaveRoguelike.json`): `SaveQuestState` returns
+  unless `NetworkingManager.Instance.IsServer`. Only the host writes them.
+- **Character files**: `Character.Save` returns unless the character is in this window's
+  `AllMyCharacters`. Players write different files.
+- **New character numbers**: `Character.Load(-1)` takes the lowest number not on disk, and the
+  file is written later, so two windows creating characters together could choose the same one.
+  The mod picks under a machine-wide mutex and records each pick for the other windows.
+- **`GlobalSaveData.json` and transmog data**: written by every window with the same temp name.
+  Simultaneous saves could collide, so the mod makes them take turns under the same mutex. That
+  prevents collisions but not lost updates: each window serialises its own in-memory copy, so the
+  last window to save a shared file wins.
+
 ## Claiming a controller by pressing a button on it
 
 Giving each window a pad by index works, but it needs someone to enumerate the controllers first

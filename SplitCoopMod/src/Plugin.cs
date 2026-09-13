@@ -97,8 +97,17 @@ namespace SplitCoopMod
                 SeatClaim.Trace = Trace;
                 AutoPlay.Shoot = UiReport.Shoot;
 
-                new HarmonyLib.Harmony(Guid).PatchAll(typeof(Runner));
+                var harmony = new HarmonyLib.Harmony(Guid);
+                harmony.PatchAll(typeof(Runner));
                 Trace("Patched GUIManager.Update; waiting for the main menu.");
+
+                // Only in a split-screen window: a single ordinary copy has nothing to share
+                // saves with, and its controller assignments are the player's to keep.
+                if (role != Role.None || InputIsolation.Wanted)
+                {
+                    SaveGuard.Trace = Trace;
+                    SaveGuard.Apply(harmony);
+                }
             }
             catch (Exception e)
             {

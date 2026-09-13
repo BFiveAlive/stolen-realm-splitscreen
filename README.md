@@ -221,6 +221,10 @@ Measured on Windows 11, Stolen Realm (Unity 2022.3.62), BepInEx 5.4.23.5:
 | UI untouched at 16:9 | yes — no canvas or column change at 2560x1440 or 1280x720 |
 | Launcher, end to end | yes — driven through UI Automation clicking **Launch**: host reported its session at 39s and player 2 was started at that moment, both reached `SESSION OK` (`networkId=0` / `networkId=1`), windows tiled `0,0 1280x1440` and `1280,0 1280x1440`, launcher minimised itself once seats were filled |
 | Claim handshake | yes — player 2's game wrote `ready-1.txt`, listened on the turn it was given (`2 joystick(s) present, 0 already taken`), and the launcher reacted to a seat file by showing the pad, clearing the turn and finishing |
+| Two windows on real gamepads | yes — pads 0 and 1 by index, both windows 0 errors, host `networkId=0`, joiner `networkId=1`, both into character creation |
+| Character creation in split-screen | yes — both windows report identical stats (level 1, base health 100) and the same attribute layout, five rows each with its own −/+ buttons, confirmed by screenshot at 1280x1440 |
+| Controller setup is never saved | yes — both windows closed gracefully, and the registry's controller assignments were byte-for-byte unchanged |
+| Game start-up after a session | yes — a plain, mod-free launch afterwards has 0 errors |
 | **A real button press claiming a pad** | **not verified** — two Xbox pads were connected and seen by the game, but nobody was there to press a button. The claim in the test was a simulated `seat-1.txt` in exactly the format the mod writes. |
 | **Gamepad isolation** | **not verified** — the game now sees two connected Xbox pads, but binding one needs a person to press a button (or pick it by index) and then check that the other window ignores it. |
 | **Actual play** | **not verified** — the tests reach the party-select screen and stop. Picking characters, entering combat and two people acting at once needs a human at each seat. |
@@ -229,11 +233,25 @@ Take the last two as untested rather than working.
 
 ## Known limitations
 
-**Saves are shared.** All instances read and write the same
-`%USERPROFILE%\AppData\LocalLow\Burst2Flame Entertainment\Stolen Realm\`. Two players picking two
-different characters write two different files, which is the ordinary case, but nothing here
-isolates them and simultaneous writes have not been stress-tested. Run `tools\Backup-Saves.ps1`
-before a session. The game keeps its own `.backup` files too, but do not rely on that alone.
+**Saves are shared, and the mod guards what it can.** Every window is the same install under the
+same Windows user, so they share one save folder
+(`%USERPROFILE%\AppData\LocalLow\Burst2Flame Entertainment\Stolen Realm\`) and one set of registry
+settings. What that means in practice, read from the game's save code:
+
+| File | Who writes it | Risk with several windows |
+|---|---|---|
+| `QuestSaveCampaign.json` / `QuestSaveRoguelike.json` | host only | none |
+| `CharacterN.json` | the window that owns that character | none in normal play - each player saves their own |
+| New character file numbers | whichever window creates one | two windows creating at once could pick the same `N`. **Guarded:** numbers are picked under a shared lock and reserved |
+| `GlobalSaveData.json`, transmog data | every window | the game writes `X.temp` then swaps it in; simultaneous saves could collide. **Guarded:** saves take turns. Still last-writer-wins, since each window keeps its own copy in memory |
+| Controller assignments (registry) | every window, when it closes | **this broke the game once.** A split-screen window's controller setup was saved and loaded by every later launch, modded or not, which left player 1 with no keyboard or mouse and the game unable to start. **Fixed:** split-screen windows never save their controller assignments |
+
+The game's own `.backup` files and `tools\Backup-Saves.ps1` are still worth using before a session.
+
+If the game ever starts throwing errors on every launch after a split-screen session, the saved
+controller assignments are the first thing to reset: delete the
+`RewiredSaveData_ControllerAssignments_*` value under
+`HKEY_CURRENT_USER\Software\Burst2Flame Entertainment\Stolen Realm`, and the game rebuilds it.
 
 **One purchase, several players.** This runs several instances of a single copy through the game's
 own LAN feature. That is a shipped feature being used as shipped, with nothing circumvented — but
