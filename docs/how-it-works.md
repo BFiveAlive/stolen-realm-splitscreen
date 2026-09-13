@@ -177,3 +177,41 @@ makes a poor threshold.
 desktop capture through GDI (`CopyFromScreen`) returns the wallpaper, because Unity renders into a
 DirectX surface GDI cannot read - which looks exactly like a black or missing window and is easy to
 misread as the game having failed.
+
+## Claiming a controller by pressing a button on it
+
+Giving each window a pad by index works, but it needs someone to enumerate the controllers first
+and type the right numbers, and Windows' numbering is not Rewired's. Pressing a button on the pad
+you are holding is how every couch game does it, so the launcher does that instead.
+
+The catch is that the launcher cannot see which pad a press came from. Rewired owns the devices,
+and Rewired runs inside each game. So the claiming happens in the games, and the launcher only
+takes turns, through a directory both sides can read:
+
+```
+turn.txt      launcher -> games   the seat that should listen next, or -1
+ready-N.txt   game N -> launcher  loaded, and can hear its controllers
+seat-N.txt    game N -> launcher  index=, name=, hardware= of the pad it took
+```
+
+The seat whose turn it is polls `Joystick.GetAnyButtonDown()` on every joystick no `seat-*.txt`
+has taken, binds the first one pressed, and writes its seat file. Only one seat listens at a time,
+so two windows cannot both claim one press, and every window excludes what the others took
+because it reads their files rather than trusting anything in its own memory.
+
+Two details that matter:
+
+- **The poll runs every frame.** `GetAnyButtonDown` is true for the single frame the button goes
+  down. The file reads are throttled to four a second; sampling the button at that rate would miss
+  most presses.
+- **Every window must be hearing input while unfocused**, since the launcher holds focus during
+  claiming. That is the `ignoreInputWhenAppNotInFocus` fix above, and this would not work without
+  it.
+
+Joystick indices are compared across processes, which assumes every instance enumerates the pads
+in the same order. They are the same program reading the same device list at the same time, and
+the index-based `-srcontroller <n>` has always relied on the same thing.
+
+The launcher also carries the mod as an embedded resource and copies it into the game when the
+installed one differs. The two halves of this exchange are only useful together, and this makes
+it impossible to pair a launcher with a mod too old to answer it.

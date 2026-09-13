@@ -25,6 +25,8 @@ namespace SplitCoopMod
     ///   -srjoin &lt;ip&gt;    join one
     ///   -srmode roguelike    optional; campaign is the default
     ///   -srplayer &lt;n&gt;   optional label used in this mod's log file name
+    ///   -srcontroller claim  let the player pick this window's pad by pressing a button on it,
+    ///                        coordinated through -srclaimdir and -srseat
     ///
     /// Nothing here touches Steam identity. Direct-IP play is a shipped feature and the peers are
     /// told apart by a host-assigned NetworkId, not by who is signed in, which is why two
@@ -92,6 +94,7 @@ namespace SplitCoopMod
                 UiReport.Trace = Trace;
                 UiFit.Trace = Trace;
                 AutoPlay.Trace = Trace;
+                SeatClaim.Trace = Trace;
                 AutoPlay.Shoot = UiReport.Shoot;
 
                 new HarmonyLib.Harmony(Guid).PatchAll(typeof(Runner));
@@ -139,6 +142,21 @@ namespace SplitCoopMod
 
                     case "-srcontroller":
                         InputIsolation.Requested = next;
+
+                        // The launcher sends "claim" when the player is going to choose the pad by
+                        // pressing a button on it, rather than anyone typing an index in advance.
+                        if (string.Equals(next, "claim", StringComparison.OrdinalIgnoreCase))
+                            SeatClaim.Enabled = true;
+                        break;
+
+                    case "-srclaimdir":
+                        SeatClaim.Dir = next;
+                        break;
+
+                    case "-srseat":
+                        int seat;
+                        if (int.TryParse(next, NumberStyles.Integer, CultureInfo.InvariantCulture, out seat))
+                            SeatClaim.Seat = seat;
                         break;
 
                     case "-srlistcontrollers":

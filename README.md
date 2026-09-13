@@ -6,6 +6,33 @@ PC, one screen, one controller each.
 It runs one copy of the game per player, joins them into a single session over the loopback
 address, pins each copy to one input device, and lays the windows out across the screen.
 
+## Playing
+
+Run **`StolenRealmSplitScreen.exe`**. No scripts, no command lines.
+
+1. **Pick the number of players and the game** — Campaign or Roguelike — and, if you like, the
+   screen layout.
+2. **Set up the seats.** The picture of your screen shows one tile per player. Click a tile to
+   switch it between a controller and keyboard & mouse. Drag one tile onto another to swap them.
+3. **Press Launch.** The games start, join each other and fill their tiles.
+4. **Claim your controllers.** The launcher stays on top and highlights one screen at a time:
+   whoever is sitting there presses any button on their pad, and it appears on their tile. Click
+   a different tile to fill that one first. Once everyone has a controller the launcher gets out
+   of the way.
+
+Each window then reaches the game's party-select screen, where every player picks their own
+character.
+
+While playing, the launcher sits in the taskbar. Open it to swap two players' windows, give a
+latecomer a controller, or **Stop**, which closes every game window at once.
+
+The launcher remembers your last setup, finds the game through Steam's library list, and carries
+the mod inside itself — on Launch it installs SplitCoopMod into the game, or updates it if it is
+out of date. The one thing it cannot do for you is install BepInEx.
+
+The PowerShell scripts in `tools\` do the same job from a command line and are still there if you
+prefer them:
+
 ```powershell
 .\tools\Start-SplitScreen.ps1 -Players 2 -Controllers keyboard,0
 ```
@@ -82,17 +109,26 @@ has anything to do, but it covers aspect ratios that were not tested.
   direct-IP session)
 - [BepInEx 5.4.23.5 (win_x64)](https://github.com/BepInEx/BepInEx/releases) installed in the game
   folder
-- .NET SDK 8 to build the mod
-- PowerShell 7 (`pwsh`) for the launcher
 - One input device per player
 
-## Install
+Nothing else to play. The launcher is self-contained and needs no .NET install.
+
+## Building
+
+Needs the .NET 8 SDK and the game installed (the mod compiles against its assemblies).
+
+```powershell
+.\tools\Publish-Launcher.ps1
+# -> dist\StolenRealmSplitScreen.exe
+```
+
+That builds the mod, embeds it in the launcher, and publishes one .exe. To build only the mod:
 
 ```powershell
 dotnet build SplitCoopMod\SplitCoopMod.csproj -c Release
 ```
 
-The build copies `SplitCoopMod.dll` into `BepInEx\plugins\SplitCoopMod\`. Override the game path
+which also copies `SplitCoopMod.dll` into `BepInEx\plugins\SplitCoopMod\`. Override the game path
 with `-p:GameDir="D:\...\Stolen Realm"` if yours is elsewhere.
 
 ## Use
@@ -175,7 +211,10 @@ Measured on Windows 11, Stolen Realm (Unity 2022.3.62), BepInEx 5.4.23.5:
 | Client retries a too-early connect | yes — forced by starting the client 45s before the host: first attempt failed, retried twice, joined at 62s |
 | UI readable in a tile | yes — verified by screenshot at 1280x1440: party cards and the skill tree render as they do at native, after the canvas correction |
 | UI untouched at 16:9 | yes — no canvas or column change at 2560x1440 or 1280x720 |
-| **Gamepad isolation** | **not verified** — no controller was attached to the test machine. The code path runs and reports `waiting for joystick 0; 0 present`, which is the correct behaviour with none plugged in, but binding a real pad has not been exercised. |
+| Launcher, end to end | yes — driven through UI Automation clicking **Launch**: host reported its session at 39s and player 2 was started at that moment, both reached `SESSION OK` (`networkId=0` / `networkId=1`), windows tiled `0,0 1280x1440` and `1280,0 1280x1440`, launcher minimised itself once seats were filled |
+| Claim handshake | yes — player 2's game wrote `ready-1.txt`, listened on the turn it was given (`2 joystick(s) present, 0 already taken`), and the launcher reacted to a seat file by showing the pad, clearing the turn and finishing |
+| **A real button press claiming a pad** | **not verified** — two Xbox pads were connected and seen by the game, but nobody was there to press a button. The claim in the test was a simulated `seat-1.txt` in exactly the format the mod writes. |
+| **Gamepad isolation** | **not verified** — the game now sees two connected Xbox pads, but binding one needs a person to press a button (or pick it by index) and then check that the other window ignores it. |
 | **Actual play** | **not verified** — the tests reach the party-select screen and stop. Picking characters, entering combat and two people acting at once needs a human at each seat. |
 
 Take the last two as untested rather than working.
@@ -213,8 +252,9 @@ same mod and the same arguments.
 ## Layout
 
 ```
-SplitCoopMod/     BepInEx mod: the command-line arguments and input isolation
-tools/            launcher, controller list, session stop, save backup, test harnesses
+Launcher/         the launcher app: seating plan, controller claiming, window placement
+SplitCoopMod/     BepInEx mod: the command-line arguments, input isolation, UI fitting
+tools/            script launcher, publish, controller list, session stop, save backup, tests
 nucleus/          optional Nucleus Co-op handler
 docs/             how the game's multiplayer and UI actually work
 ```

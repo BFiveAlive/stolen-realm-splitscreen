@@ -74,6 +74,15 @@ namespace SplitCoopMod
                 if (applied)
                     return;
 
+                // "claim" means nobody has chosen a device for this window yet: the player is about
+                // to choose it by pressing a button on it. Until they do there is nothing to assign.
+                if (SeatClaim.Enabled)
+                {
+                    SeatClaim.Announce();
+                    SeatClaim.Tick();
+                    return;
+                }
+
                 bool keyboard = Requested.Equals("keyboard", StringComparison.OrdinalIgnoreCase);
                 int index = -1;
 
@@ -143,6 +152,24 @@ namespace SplitCoopMod
             {
                 Say("re-isolating after a controller change failed: " + e.Message);
             }
+        }
+
+        /// <summary>
+        /// Takes the joystick a player just claimed by pressing a button on it.
+        ///
+        /// <see cref="Requested"/> is rewritten to the index as well as assigned, so that the
+        /// hotplug handler below - which re-reads it whenever a controller comes or goes - keeps
+        /// handing this window the same pad rather than falling back to "claim" and unbinding it.
+        /// </summary>
+        internal static void AdoptJoystick(int index)
+        {
+            Requested = index.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+            Assign(false, index);
+            applied = true;
+
+            ReInput.ControllerConnectedEvent += OnControllerChanged;
+            ReInput.ControllerDisconnectedEvent += OnControllerChanged;
         }
 
         private static void Assign(bool keyboard, int index)

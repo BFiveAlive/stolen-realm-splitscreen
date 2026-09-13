@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SplitScreenLauncher</RootNamespace>
+    <AssemblyName>StolenRealmSplitScreen</AssemblyName>
+    <Version>0.1.0</Version>
+    <Description>Sets up and starts a local split-screen session of Stolen Realm.</Description>
+
+    <!-- Per-monitor aware on purpose. The tiles are handed to the game as pixel sizes and placed
+         with SetWindowPos, which is in pixels; a DPI-scaled process would compute both in virtual
+         units and lay the windows out wrong on any display that is not at 100%. -->
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationUseCompatibleTextRendering>false</ApplicationUseCompatibleTextRendering>
+    <!-- Required by the LibraryImport source generator for the Win32 calls. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <!-- Self-contained so that double-clicking it works on a machine with no .NET installed, which
+       is the entire point of shipping a launcher rather than a script. -->
+  <PropertyGroup>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <!-- Trimming is left off: WinForms reflects over its own types and trims badly. -->
+    <PublishTrimmed>false</PublishTrimmed>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <!-- The mod travels inside the launcher and is copied into the game on Launch, so the two halves
+       of the controller-claiming exchange can never be different versions. Build the mod first;
+       tools\Publish-Launcher.ps1 does both in the right order. -->
+  <PropertyGroup>
+    <BundledMod>$(MSBuildThisFileDirectory)..\SplitCoopMod\bin\Release\netstandard2.1\SplitCoopMod.dll</BundledMod>
+  </PropertyGroup>
+  <ItemGroup Condition="Exists('$(BundledMod)')">
+    <EmbeddedResource Include="$(BundledMod)" LogicalName="SplitCoopMod.dll" Link="SplitCoopMod.dll" />
+  </ItemGroup>
+
+</Project>
