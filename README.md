@@ -1,5 +1,10 @@
 # Stolen Realm Split-Screen
 
+> [!NOTE]
+> **This project was created with AI.** The code, tools and documentation were written with the help
+> of an AI coding assistant (Claude, by Anthropic), directed and play-tested by a person. Review it as
+> you would any third-party mod, and please report problems through the repository's issues.
+
 Local split-screen co-op for [Stolen Realm](https://store.steampowered.com/app/1330000/), on one
 PC, one screen, one controller each.
 
