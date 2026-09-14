@@ -314,6 +314,139 @@ namespace SplitCoopMod
             }
         }
 
+        /// <summary>-srkeepkeyboard: diagnostic. Leave keyboard and mouse active in a gamepad window.</summary>
+        internal static bool KeepKeyboardInPadWindow;
+
+        private static float nextEnforceAt;
+        private static int enforcementReports;
+        private static int keyboardPresses;
+        private static int keyboardLeaks;
+        private static int reportedPresses;
+        private static float nextLeakReportAt;
+
+        /// <summary>This window has been given a gamepad (by XInput slot, index, or an in-game claim).</summary>
+        private static bool OwnsGamepad
+        {
+            get
+            {
+                if (!applied || string.IsNullOrEmpty(Requested))
+                    return false;
+
+                int unused;
+                return Requested.StartsWith("xinput:", StringComparison.OrdinalIgnoreCase)
+                       || int.TryParse(Requested, NumberStyles.Integer, CultureInfo.InvariantCulture, out unused);
+            }
+        }
+
+        /// <summary>
+        /// Stops the keyboard and mouse driving a window that belongs to a gamepad player.
+        ///
+        /// A gamepad window keeps the keyboard and mouse assigned to its players, because taking them
+        /// away stopped the game starting at all. But every window also hears input while unfocused,
+        /// so the keyboard player's keys and mouse were driving the gamepad player's game too.
+        ///
+        /// Instead of unassigning the devices, their controller maps are switched off - the devices
+        /// stay where the game expects them and simply trigger no actions - for every Rewired player,
+        /// since some of the game's input reads all players rather than player 0. The Rewired UI input
+        /// module reads the mouse directly for menus rather than through maps, so its mouse input is
+        /// switched off as well. Re-applied every second, because Rewired's key-rebinding screen can
+        /// reload default maps, which come back enabled.
+        /// </summary>
+        internal static void Enforce()
+        {
+            if (!OwnsGamepad)
+                return;
+
+            try
+            {
+                if (!ReInput.isReady)
+                    return;
+
+                ProbeKeyboardLeaks();
+
+                if (KeepKeyboardInPadWindow || Time.realtimeSinceStartup < nextEnforceAt)
+                    return;
+
+                nextEnforceAt = Time.realtimeSinceStartup + 1f;
+
+                int maps = 0;
+                foreach (Player player in ReInput.players.AllPlayers)
+                {
+                    maps += DisableMaps(player, ControllerType.Keyboard);
+                    maps += DisableMaps(player, ControllerType.Mouse);
+                }
+
+                int modules = 0;
+                foreach (var module in UnityEngine.Object.FindObjectsOfType<Rewired.Integration.UnityUI.RewiredStandaloneInputModule>())
+                {
+                    if (module.allowMouseInput)
+                    {
+                        module.allowMouseInput = false;
+                        modules++;
+                    }
+                }
+
+                if ((maps > 0 || modules > 0) && enforcementReports++ < 10)
+                    Say("keyboard and mouse switched off for this gamepad window: " + maps + " map(s), "
+                        + modules + " UI input module(s)");
+            }
+            catch (Exception e)
+            {
+                Say("could not switch off keyboard and mouse for this gamepad window: " + e.Message);
+                KeepKeyboardInPadWindow = true;   // do not retry a failing call every second
+            }
+        }
+
+        private static int DisableMaps(Player player, ControllerType type)
+        {
+            var maps = player.controllers.maps.GetMaps(type, 0);
+            if (maps == null)
+                return 0;
+
+            int changed = 0;
+            foreach (ControllerMap map in maps)
+            {
+                if (map != null && map.enabled)
+                {
+                    map.enabled = false;
+                    changed++;
+                }
+            }
+
+            return changed;
+        }
+
+        /// <summary>
+        /// Counts keyboard presses this gamepad window hears, and how many of them also produced a game
+        /// action on any player in the same frame. With the guard working, presses are still heard -
+        /// the device is live - but none should reach an action.
+        /// </summary>
+        private static void ProbeKeyboardLeaks()
+        {
+            var keyboard = ReInput.controllers.Keyboard;
+            if (keyboard != null && keyboard.GetAnyButtonDown())
+            {
+                keyboardPresses++;
+
+                foreach (Player player in ReInput.players.AllPlayers)
+                {
+                    if (player.GetAnyButtonDown())
+                    {
+                        keyboardLeaks++;
+                        break;
+                    }
+                }
+            }
+
+            if (keyboardPresses != reportedPresses && Time.realtimeSinceStartup >= nextLeakReportAt)
+            {
+                reportedPresses = keyboardPresses;
+                nextLeakReportAt = Time.realtimeSinceStartup + 2f;
+                Say("INPUTPROBE keyboard presses heard by this gamepad window: " + keyboardPresses
+                    + ", that reached game actions: " + keyboardLeaks);
+            }
+        }
+
         /// <summary>
         /// Keeps this instance reading its controller while a different window holds focus.
         /// </summary>

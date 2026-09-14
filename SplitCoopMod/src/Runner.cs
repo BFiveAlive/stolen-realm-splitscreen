@@ -42,6 +42,7 @@ namespace SplitCoopMod
             // Runs regardless of role: an instance may be launched only to be pinned to one
             // controller, with a person driving the menus themselves.
             InputIsolation.TryApply();
+            InputIsolation.Enforce();
             UiReport.Tick();
             UiFit.Tick();
             AutoPlay.Tick();

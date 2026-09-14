@@ -45,6 +45,15 @@ compatible" use it. For a fifth or sixth player, or a PlayStation or other contr
 **+ Other controller**: that player presses a button on their pad once their game has loaded,
 and the launcher highlights whose turn it is.
 
+**Keyboard & mouse only drive their own player.** Every window listens for input even when it isn't
+the focused one, which is how the controller players keep playing while the keyboard player has
+focus. So a controller player's window switches its keyboard and mouse controls off once it has its
+pad: keys and mouse movement from the keyboard player no longer move, select or click anything in
+the other players' games. Measured with a keyboard window and a controller window side by side:
+without this, all 27 simulated key presses reached the controller player's game; with it, none did.
+The one exception is Windows itself — if you click into a controller player's window, that window
+takes keyboard focus like any other program until you click back.
+
 Each window then reaches the game's party-select screen, where every player picks their own
 character.
 

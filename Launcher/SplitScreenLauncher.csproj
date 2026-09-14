@@ -8,7 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>SplitScreenLauncher</RootNamespace>
     <AssemblyName>StolenRealmSplitScreen</AssemblyName>
-    <Version>0.1.1</Version>
+    <Version>0.1.2</Version>
     <Description>Sets up and starts a local split-screen session of Stolen Realm.</Description>
 
     <!-- Per-monitor aware on purpose. The tiles are handed to the game as pixel sizes and placed

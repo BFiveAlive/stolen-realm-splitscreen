@@ -172,6 +172,11 @@ namespace SplitCoopMod
                         InputIsolation.ListOnly = true;
                         break;
 
+                    case "-srkeepkeyboard":
+                        // Diagnostic: leave keyboard and mouse live in a gamepad window, to show the leak.
+                        InputIsolation.KeepKeyboardInPadWindow = true;
+                        break;
+
                     case "-srdumpui":
                         UiReport.Enabled = true;
                         break;
