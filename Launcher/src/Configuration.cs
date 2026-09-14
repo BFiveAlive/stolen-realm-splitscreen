@@ -127,9 +127,7 @@ internal sealed class SessionOptions
         if (string.IsNullOrWhiteSpace(GameDir) || !File.Exists(ExePath))
             return "Stolen Realm.exe was not found. Point the launcher at the game folder.";
 
-        if (!ModInstaller.BepInExInstalled(GameDir))
-            return "BepInEx is not installed in the game folder. Install it first - the Stolen Realm "
-                 + "mod installer does this - and then launch again.";
+        // A missing BepInEx is not a problem any more: Launch installs it (BepInExInstaller).
 
         // A launcher carrying the mod installs it on Launch, so a missing plugin is only a problem
         // for a build that was made without one.

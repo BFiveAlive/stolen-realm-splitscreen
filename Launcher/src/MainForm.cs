@@ -633,7 +633,9 @@ internal sealed class MainForm : Form
 
     private async void StartLaunch()
     {
-        if (session is not null)
+        // launching also covers the BepInEx download below, so the ready countdown cannot start a
+        // second launch while the first is still waiting on it.
+        if (session is not null || launching)
             return;
 
         countdownEndsAt = null;
@@ -654,6 +656,36 @@ internal sealed class MainForm : Form
                 options.RemoveSeat(seat);
             LobbyChanged("Removed players whose controller is no longer connected. Press a button on it to join again.");
             return;
+        }
+
+        // SplitCoopMod is a BepInEx plugin: without BepInEx the games start but never host, join or
+        // take their controllers. Install it now rather than stopping and sending the player off to
+        // do it by hand.
+        if (!ModInstaller.BepInExInstalled(options.GameDir))
+        {
+            launching = true;
+            launchButton.Enabled = false;
+            try
+            {
+                Log(await BepInExInstaller.InstallAsync(options.GameDir, new Progress<string>(SetStatus)));
+            }
+            catch (Exception ex)
+            {
+                Log("Could not install BepInEx: " + ex.Message);
+                MessageBox.Show(this,
+                    "BepInEx isn't installed in the game folder yet, and installing it automatically failed:\n\n"
+                    + ex.Message
+                    + "\n\nCheck your internet connection and press Launch again, or install BepInEx "
+                    + BepInExInstaller.Version + " (win_x64) yourself from:\n" + BepInExInstaller.ReleasePage,
+                    Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                LobbyChanged(null);
+                return;
+            }
+            finally
+            {
+                launching = false;
+                launchButton.Enabled = session is null;
+            }
         }
 
         try
