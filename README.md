@@ -18,7 +18,7 @@ Run **`StolenRealmSplitScreen.exe`**. No scripts, no command lines.
 
    | Control | Action |
    |---|---|
-   | D-pad or left stick | move your screen, swapping with whoever is there, or onto the monitor on that side |
+   | D-pad or left stick | move within your monitor, swapping places with the player beside you; at the edge, move onto the next monitor and share it |
    | LB / RB | move to the previous / next monitor |
    | A | ready |
    | B | not ready; press again to leave |

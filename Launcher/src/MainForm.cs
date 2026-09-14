@@ -497,20 +497,26 @@ internal sealed class MainForm : Form
     }
 
     /// <summary>
-    /// Moves a player's screen one step in a direction: into the neighbouring position, swapping
-    /// with whoever is there, or onto the monitor on that side when there is nobody to swap with.
+    /// Moves a player's screen one step in a direction.
+    ///
+    /// Within their own monitor it swaps with the neighbouring position. Off the edge of their
+    /// monitor it moves them onto the next one, sharing it with whoever is already there - never
+    /// swapping monitors with a player on the other screen, which is what an earlier version did
+    /// when it looked for the nearest tile on any monitor. They enter from the side they came in
+    /// on: moving right lands in the first position of the monitor to the right.
     /// </summary>
     private void MoveSeat(Seat seat, int dx, int dy)
     {
-        if (SeatLayout.NeighbourInDirection(options, seat, dx, dy) is { } neighbour)
+        if (SeatLayout.NeighbourInDirection(options, seat, dx, dy, sameDisplayOnly: true) is { } neighbour)
         {
             SeatLayout.Swap(seat, neighbour);
             SeatsRearranged($"Player {seat.Index + 1} swapped with player {neighbour.Index + 1}.");
         }
         else if (SeatLayout.DisplayInDirection(options, seat, dx, dy) is { } display)
         {
-            SeatLayout.MoveTo(options, seat, display.DeviceName, int.MaxValue);
-            SeatsRearranged($"Player {seat.Index + 1} moved to display {display.Number}.");
+            int slot = dx > 0 || dy > 0 ? 0 : int.MaxValue;
+            SeatLayout.MoveTo(options, seat, display.DeviceName, slot);
+            SeatsRearranged($"Player {seat.Index + 1} moved onto display {display.Number}.");
         }
     }
 

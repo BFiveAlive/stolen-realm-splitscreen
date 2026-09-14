@@ -160,18 +160,23 @@ internal static class SeatLayout
     /// Scored on distance along the direction plus twice the sideways offset, so pressing right
     /// picks the tile beside you rather than a nearer one diagonally below.
     /// </summary>
-    internal static Seat? NeighbourInDirection(SessionOptions options, Seat seat, int dx, int dy)
+    internal static Seat? NeighbourInDirection(SessionOptions options, Seat seat, int dx, int dy, bool sameDisplayOnly)
     {
-        var layout = Compute(options);
+        var displays = Displays();
+        var layout = Compute(options, displays);
         if (!layout.TryGetValue(seat, out Rectangle from))
             return null;
 
+        var home = DisplayOf(seat, displays);
         Seat? best = null;
         double bestScore = double.MaxValue;
 
         foreach (var (other, rect) in layout)
         {
             if (other == seat)
+                continue;
+
+            if (sameDisplayOnly && DisplayOf(other, displays) != home)
                 continue;
 
             double score = DirectionalScore(from, rect, dx, dy);
