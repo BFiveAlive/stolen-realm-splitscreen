@@ -171,6 +171,36 @@ where the game gives them 247 - still overlapping. And the authored `cellSize.x`
 width the card contents need; it is only what the *Flexible* branch uses to count cells, so it
 makes a poor threshold.
 
+### The Attributes panel
+
+The canvas correction adds logical height to a tall window, and one panel took it badly. In
+`InventoryManager.ApplyStyle` the character menu gives the Attributes panel a flexible height share
+of the left column:
+
+```csharp
+component.flexibleHeight = Style.AttributesHeightShare;   // 0.52; Stats takes 0.6, the bars 0.04
+```
+
+Its name and value columns are VerticalLayoutGroups with fixed top and bottom padding, so the five
+rows spread over whatever height the panel gets. The + column is anchored separately, at
+`Style.AddButtonsOffset` from the panel's top-right with its own fixed spacing. At 16:9 the two agree.
+With twice the logical height the panel roughly doubled, the rows spread about twice as far, and the
+buttons stayed bunched under Might. The game's own tooltip on `AttributeRowsBottomPadding` describes
+the same effect: raise the height share without the padding and "the five rows ... spread out".
+
+In a window narrower than 16:9, `AttributePanelFit` replaces the share with a fixed height:
+
+```
+height = (panel height - column height)          // title, level text, bar
+       + top padding + bottom padding
+       + rows * button spacing - layout spacing
+```
+
+The button spacing is read from the + column's children in local space, so it works while that
+column is hidden (no points to spend). The panel is then only as tall as its contents, each row sits
+level with its button, and the Stats list below takes the height back. `ApplyStyle` restores the
+share whenever it runs, so the fit is re-applied from `UiFit`'s twice-a-second tick.
+
 ### Screenshots
 
 `ScreenCapture.CaptureScreenshot` from inside the game is the only way to see any of this. A

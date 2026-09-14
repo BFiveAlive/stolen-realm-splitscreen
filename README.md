@@ -123,6 +123,13 @@ the width their contents need. Where that happens the mod lowers the column coun
 is at least as wide as the layout's authored cell. With the canvas correction in place this rarely
 has anything to do, but it covers aspect ratios that were not tested.
 
+One panel needed its own fix. The character menu's **Attributes** panel takes a share of the left
+column's height rather than a fixed size, so in a tall window it grew far taller than its five rows,
+and the rows spread out with it while the + buttons (placed at fixed spacing) stayed bunched under
+Might. In a window narrower than 16:9 the mod gives that panel a fixed height instead: its title,
+level text and bar, plus five rows at the buttons' own spacing. The rows line up with their buttons
+again, and the height it no longer takes goes to the Stats list below.
+
 ## Requirements
 
 - Stolen Realm on Steam, with Steam running (its networking library is the transport even for a

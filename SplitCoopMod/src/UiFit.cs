@@ -60,6 +60,11 @@ namespace SplitCoopMod
                 // interface uses Unity's, and a fixed column count is just as wrong there.
                 foreach (var grid in UnityEngine.Object.FindObjectsOfType<GridLayoutGroup>())
                     FitUnity(grid);
+
+                // The character menu's attribute rows stretch with the extra height the canvas
+                // correction adds, while their +/- buttons do not; bring them back into line.
+                AttributePanelFit.Trace = Trace;
+                AttributePanelFit.Tick();
             }
             catch (Exception e)
             {

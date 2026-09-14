@@ -22,7 +22,7 @@ namespace SplitCoopMod
         internal static Action<string> Trace;
         internal static Action<string> Shoot;
 
-        private enum Step { WaitForList, Pick, Accept, WaitForGame, Settle, OpenCharacter, OpenSkills, Done }
+        private enum Step { WaitForList, Pick, Accept, WaitForGame, Settle, OpenCharacter, ShootCharacter, OpenSkills, Done }
 
         private static Step step = Step.WaitForList;
         private static float nextAt;
@@ -207,8 +207,13 @@ namespace SplitCoopMod
                 case Step.Pick:
                 {
                     var mgr = CharacterChoiceManager.Instance;
+                    // A character with attribute points to spend, when there is one: the + button
+                    // column only appears then, and the character menu's attribute layout cannot be
+                    // checked without it.
                     var first = mgr.notInPartyHolder.GetComponentsInChildren<CharacterChoiceItem>()
-                        .FirstOrDefault(x => x != null && x.Character != null && !x.Character.HardcoreDeath);
+                        .Where(x => x != null && x.Character != null && !x.Character.HardcoreDeath)
+                        .OrderByDescending(x => x.Character.UnspentStatPoints > 0)
+                        .FirstOrDefault();
 
                     if (first == null)
                     {
@@ -219,7 +224,8 @@ namespace SplitCoopMod
 
                     mgr.selectedCharacterChoiceItem = first;
                     mgr.ToggleSelectedCharacter(0);
-                    Say("added '" + first.Character.CharacterName + "' to the party");
+                    Say("added '" + first.Character.CharacterName + "' to the party ("
+                        + first.Character.UnspentStatPoints + " unspent attribute points)");
 
                     nextAt = Time.realtimeSinceStartup + 3f;
                     step = Step.Accept;
@@ -260,12 +266,18 @@ namespace SplitCoopMod
                     // Long enough for the window prefab to load: these are LoadableUIWindows, and
                     // the first open pulls the prefab in rather than showing something existing.
                     nextAt = Time.realtimeSinceStartup + 6f;
+                    step = Step.ShootCharacter;
+                    return;
+
+                case Step.ShootCharacter:
+                    // Its own step: ScreenCapture writes the image a frame or two later, so a shot
+                    // queued in the same step that opens the skill tree captures the skill tree.
+                    Shoot("CharacterMenu");
+                    nextAt = Time.realtimeSinceStartup + 3f;
                     step = Step.OpenSkills;
                     return;
 
                 case Step.OpenSkills:
-                    Shoot("CharacterMenu");
-
                     EnsureSelectedCharacter();
                     CharacterMenusManager.Instance.OpenSkillTreeMenu();
                     Say("opened the skill tree");
