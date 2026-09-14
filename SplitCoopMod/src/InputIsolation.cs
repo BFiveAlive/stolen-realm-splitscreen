@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Text;
 using Rewired;
 using UnityEngine;
@@ -13,8 +14,8 @@ namespace SplitCoopMod
     /// The first is sharing: every instance is a full copy of the game and Rewired in each of them
     /// sees every controller on the machine, so without this a single stick nudge moves a character
     /// in all of them at once. Rewired is built around players owning controllers, so the fix is to
-    /// clear what it auto-assigned, hand player 0 the chosen device, and turn auto-assignment off
-    /// so it is not undone when a controller is re-detected.
+    /// take the gamepads away from every player, hand player 0 the chosen one, and turn
+    /// auto-assignment off so it is not undone when a controller is re-detected.
     ///
     /// The second is focus. Only one window can be focused, and Rewired defaults to
     /// <c>ignoreInputWhenAppNotInFocus</c>, which would leave every player but one holding a dead
@@ -23,7 +24,13 @@ namespace SplitCoopMod
     /// </summary>
     internal static class InputIsolation
     {
-        /// <summary>-srcontroller: a joystick index, or "keyboard" for the mouse-and-keyboard seat.</summary>
+        /// <summary>
+        /// -srcontroller:
+        ///   xinput:N   the Xbox-style pad in Windows XInput slot N (0-3) - what the launcher sends
+        ///   keyboard   keyboard and mouse, no gamepads
+        ///   claim      the player will press a button on their pad in game (see SeatClaim)
+        ///   N          Rewired's joystick index, for starting instances by hand
+        /// </summary>
         internal static string Requested;
 
         /// <summary>-srlistcontrollers: log what Rewired sees and which index each one is.</summary>
@@ -37,6 +44,8 @@ namespace SplitCoopMod
         private static int attempts;
 
         internal static bool Wanted => !string.IsNullOrEmpty(Requested) || ListOnly;
+
+        private enum Resolution { Keyboard, Joystick, NotPresent, Invalid }
 
         /// <summary>
         /// Retried until Rewired reports ready and the requested device is actually present.
@@ -74,11 +83,9 @@ namespace SplitCoopMod
                 if (applied)
                     return;
 
-                // Not while the game is still starting. Taking the keyboard and mouse away from
-                // Rewired's player 0 before the game has built its network layer and main menu
-                // stops it initialising at all: thousands of errors a minute, and in a session,
-                // stats and menus that make no sense. Measured: a window given its pad at 8s broke
-                // every time; one given its pad after its session formed was fine.
+                // Not while the game is still starting; controllers are left alone until the main
+                // menu and network layer exist. See docs/how-it-works.md for what went wrong when
+                // input was rearranged earlier.
                 if (!GameInitialised())
                     return;
 
@@ -91,30 +98,34 @@ namespace SplitCoopMod
                     return;
                 }
 
-                bool keyboard = Requested.Equals("keyboard", StringComparison.OrdinalIgnoreCase);
-                int index = -1;
-
-                if (!keyboard && !int.TryParse(Requested, out index))
+                int index;
+                switch (Resolve(out index))
                 {
-                    Say("-srcontroller '" + Requested + "' is neither a number nor \"keyboard\"; leaving input alone");
-                    applied = true;
-                    return;
-                }
-
-                if (!keyboard && (index < 0 || index >= ReInput.controllers.joystickCount))
-                {
-                    if (++attempts % 30 == 0)
-                        Say("waiting for joystick " + index + "; " + ReInput.controllers.joystickCount + " present");
-
-                    if (attempts > 300)
-                    {
-                        Say("giving up: joystick " + index + " never appeared");
+                    case Resolution.Invalid:
+                        Say("-srcontroller '" + Requested + "' is not xinput:N, keyboard, claim or a joystick index; leaving input alone");
                         applied = true;
-                    }
-                    return;
+                        return;
+
+                    case Resolution.NotPresent:
+                        if (++attempts % 30 == 0)
+                            Say("waiting for controller " + Requested + "; " + ReInput.controllers.joystickCount + " joystick(s) present");
+
+                        if (attempts > 300)
+                        {
+                            Say("giving up: controller " + Requested + " never appeared");
+                            applied = true;
+                        }
+                        return;
+
+                    case Resolution.Keyboard:
+                        Assign(true, -1);
+                        break;
+
+                    default:
+                        Assign(false, index);
+                        break;
                 }
 
-                Assign(keyboard, index);
                 applied = true;
 
                 // Rewired re-assigns on a hotplug, which would hand this instance somebody else's
@@ -130,13 +141,66 @@ namespace SplitCoopMod
             }
         }
 
+        private static Resolution Resolve(out int index)
+        {
+            index = -1;
+
+            if (Requested.Equals("keyboard", StringComparison.OrdinalIgnoreCase))
+                return Resolution.Keyboard;
+
+            if (Requested.StartsWith("xinput:", StringComparison.OrdinalIgnoreCase))
+            {
+                int slot;
+                if (!int.TryParse(Requested.Substring("xinput:".Length), NumberStyles.Integer, CultureInfo.InvariantCulture, out slot)
+                    || slot < 0 || slot > 3)
+                    return Resolution.Invalid;
+
+                index = FindXInputJoystick(slot);
+                return index >= 0 ? Resolution.Joystick : Resolution.NotPresent;
+            }
+
+            if (!int.TryParse(Requested, NumberStyles.Integer, CultureInfo.InvariantCulture, out index))
+                return Resolution.Invalid;
+
+            return index >= 0 && index < ReInput.controllers.joystickCount ? Resolution.Joystick : Resolution.NotPresent;
+        }
+
+        /// <summary>
+        /// Rewired's index for the pad in Windows XInput slot <paramref name="slot"/>, or -1.
+        ///
+        /// Rewired creates its XInput devices from slots 0-3 and reports each slot as the joystick's
+        /// <c>systemId</c> - read from Rewired_Windows: the same number names the pad "XInput Gamepad
+        /// slot+1". A launcher reading XInput directly sees the same slots, which is what makes it
+        /// possible to choose controllers before any game is running. Unlike Rewired's index, the
+        /// slot does not change when some other controller is plugged in.
+        /// </summary>
+        internal static int FindXInputJoystick(int slot)
+        {
+            for (int i = 0; i < ReInput.controllers.joystickCount; i++)
+            {
+                Joystick joystick = ReInput.controllers.Joysticks[i];
+                if (joystick != null && IsXInput(joystick) && joystick.systemId.HasValue && joystick.systemId.Value == slot)
+                    return i;
+            }
+
+            return -1;
+        }
+
+        internal static bool IsXInput(Joystick joystick)
+        {
+            string hardware = joystick.hardwareIdentifier ?? string.Empty;
+            string name = joystick.name ?? string.Empty;
+
+            return hardware.IndexOf("XInput", StringComparison.OrdinalIgnoreCase) >= 0
+                   || name.StartsWith("XInput", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static float initialisedSince = -1f;
         private static bool announcedWait;
 
         /// <summary>
         /// True once the game has finished starting, plus a few seconds to settle: the main menu
-        /// exists and the network layer's Root has been created. Root is the thing found missing in
-        /// every broken start, so it is the thing waited for.
+        /// exists and the network layer's Root has been created.
         /// </summary>
         private static bool GameInitialised()
         {
@@ -180,23 +244,18 @@ namespace SplitCoopMod
                 if (Requested == null)
                     return;
 
-                bool keyboard = Requested.Equals("keyboard", StringComparison.OrdinalIgnoreCase);
                 int index;
-
-                if (keyboard)
+                switch (Resolve(out index))
                 {
-                    Assign(true, -1);
-                    return;
-                }
-
-                if (int.TryParse(Requested, out index)
-                    && index >= 0 && index < ReInput.controllers.joystickCount)
-                {
-                    Assign(false, index);
-                }
-                else
-                {
-                    Say("after a controller change, joystick " + Requested + " is not present");
+                    case Resolution.Keyboard:
+                        Assign(true, -1);
+                        break;
+                    case Resolution.Joystick:
+                        Assign(false, index);
+                        break;
+                    default:
+                        Say("after a controller change, controller " + Requested + " is not present");
+                        break;
                 }
             }
             catch (Exception e)
@@ -208,13 +267,17 @@ namespace SplitCoopMod
         /// <summary>
         /// Takes the joystick a player just claimed by pressing a button on it.
         ///
-        /// <see cref="Requested"/> is rewritten to the index as well as assigned, so that the
-        /// hotplug handler below - which re-reads it whenever a controller comes or goes - keeps
-        /// handing this window the same pad rather than falling back to "claim" and unbinding it.
+        /// <see cref="Requested"/> is rewritten as well as assigned, so that the hotplug handler -
+        /// which re-reads it whenever a controller comes or goes - keeps handing this window the same
+        /// pad. An XInput pad is remembered by slot, which survives other pads being plugged in.
         /// </summary>
         internal static void AdoptJoystick(int index)
         {
-            Requested = index.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            Joystick joystick = ReInput.controllers.Joysticks[index];
+
+            Requested = IsXInput(joystick) && joystick.systemId.HasValue
+                ? "xinput:" + joystick.systemId.Value.ToString(CultureInfo.InvariantCulture)
+                : index.ToString(CultureInfo.InvariantCulture);
 
             Assign(false, index);
             applied = true;
@@ -229,9 +292,7 @@ namespace SplitCoopMod
             ReInput.configuration.autoAssignJoysticks = false;
 
             // Only gamepads are moved. An earlier version cleared every controller, keyboard and
-            // mouse included, and the game does not survive player 0 losing its keyboard: the
-            // next thing it set up (the session, and before that the whole start) failed with
-            // errors every frame. Keyboard and mouse stay exactly where the game put them.
+            // mouse included, and the game does not survive player 0 losing its keyboard.
             foreach (Player player in ReInput.players.AllPlayers)
                 player.controllers.ClearControllersOfType(ControllerType.Joystick);
 
@@ -247,15 +308,14 @@ namespace SplitCoopMod
             {
                 Joystick joystick = ReInput.controllers.Joysticks[index];
                 mine.controllers.AddController(joystick, removeFromOtherPlayers: true);
-                Say("input isolated: joystick " + index + " (" + joystick.name + ") only, keyboard and mouse left in place");
+                Say("input isolated: joystick " + index + " (" + joystick.name
+                    + (joystick.systemId.HasValue ? ", system id " + joystick.systemId.Value : string.Empty)
+                    + ") only, keyboard and mouse left in place");
             }
         }
 
         /// <summary>
         /// Keeps this instance reading its controller while a different window holds focus.
-        ///
-        /// Without it only whichever window was clicked last responds, which for split-screen means
-        /// every player but one is holding a dead pad. Set once, as early as Rewired allows.
         /// </summary>
         private static void AllowInputWhileUnfocused()
         {
@@ -280,7 +340,7 @@ namespace SplitCoopMod
             }
         }
 
-        /// <summary>The joystick list, in the index order that -srcontroller expects.</summary>
+        /// <summary>The joystick list, with the index and XInput slot each one answers to.</summary>
         private static string Describe()
         {
             var sb = new StringBuilder();
@@ -291,7 +351,8 @@ namespace SplitCoopMod
                 Joystick j = ReInput.controllers.Joysticks[i];
                 sb.Append(Environment.NewLine)
                   .Append("  index ").Append(i).Append(" : ").Append(j.name)
-                  .Append("  [").Append(j.hardwareName).Append("]");
+                  .Append("  [").Append(j.hardwareName).Append("]")
+                  .Append(IsXInput(j) && j.systemId.HasValue ? "  xinput:" + j.systemId.Value : "  (not XInput)");
             }
 
             return sb.ToString();

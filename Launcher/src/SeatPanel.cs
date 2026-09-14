@@ -8,16 +8,19 @@ internal enum PanelPhase { Setup, Live }
 /// <summary>
 /// A picture of every monitor, cut into the tiles the windows will occupy.
 ///
-/// It is the whole seating plan in one place. Click a tile to change how that player plays. Drag a
-/// player onto another player's tile to swap them, onto the edge of one to share that screen, or
-/// onto an empty monitor to give them that monitor. Once the games are running, each player's
-/// controller appears on their tile as they press a button on it.
+/// In the lobby, each player who joins appears as a tile they move around with their own
+/// controller. The mouse works too: drag a player onto another to swap, onto the edge of one to
+/// share that screen, onto an empty monitor to go there; click to toggle ready; right-click to
+/// remove. Once the games are running, players claiming a non-Xbox controller in game see it
+/// appear on their tile.
 /// </summary>
 internal sealed class SeatPanel : Control
 {
     private enum DropKind { None, Swap, Beside, Display }
 
     private readonly record struct Drop(DropKind Kind, Seat? Target, bool After, Display? Display, RectangleF Preview);
+
+    private static readonly Color ReadyColour = Color.FromArgb(110, 204, 124);
 
     private readonly System.Windows.Forms.Timer animation = new() { Interval = 40 };
     private readonly Font titleFont = new("Segoe UI Semibold", 15f);
@@ -27,6 +30,7 @@ internal sealed class SeatPanel : Control
     private readonly Font compactBodyFont = new("Segoe UI", 9f);
     private readonly Font compactSmallFont = new("Segoe UI", 8f);
     private readonly Font labelFont = new("Segoe UI Semibold", 8.5f);
+    private readonly Font promptFont = new("Segoe UI Semibold", 13f);
 
     private Seat? pressed;
     private Point pressPoint;
@@ -39,10 +43,10 @@ internal sealed class SeatPanel : Control
                  | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
         BackColor = Theme.Back;
 
-        // Only the seat waiting for a button press animates; nothing else needs repainting.
+        // The empty lobby's join prompt and a seat waiting for a claim both pulse.
         animation.Tick += (_, _) =>
         {
-            if (Phase == PanelPhase.Live && ArmedSeat >= 0)
+            if ((Phase == PanelPhase.Live && ArmedSeat >= 0) || (Phase == PanelPhase.Setup && Options?.Seats.Count == 0))
                 Invalidate();
         };
         animation.Start();
@@ -60,6 +64,8 @@ internal sealed class SeatPanel : Control
 
     internal event Action<Seat>? SeatClicked;
 
+    internal event Action<Seat>? SeatRemoveRequested;
+
     /// <summary>Two players traded places.</summary>
     internal event Action<Seat, Seat>? SeatsSwapped;
 
@@ -74,7 +80,7 @@ internal sealed class SeatPanel : Control
         if (disposing)
         {
             animation.Dispose();
-            foreach (var font in new[] { titleFont, bodyFont, smallFont, compactTitleFont, compactBodyFont, compactSmallFont, labelFont })
+            foreach (var font in new[] { titleFont, bodyFont, smallFont, compactTitleFont, compactBodyFont, compactSmallFont, labelFont, promptFont })
                 font.Dispose();
         }
 
@@ -140,12 +146,8 @@ internal sealed class SeatPanel : Control
     }
 
     /// <summary>
-    /// What letting go here would do.
-    ///
-    /// The middle of another player's tile swaps with them. The outer band of it - the part nearest
-    /// an edge - puts the dragged player beside them on that side, splitting their screen. Free
-    /// space on a display, which is a whole unused monitor or the empty quarter of a three-player
-    /// grid, adds them to that display.
+    /// What letting go here would do: the middle of another player's tile swaps with them, its
+    /// outer band puts the dragged player beside them, and free space on a display adds them there.
     /// </summary>
     private Drop DropAt(Point point)
     {
@@ -169,7 +171,6 @@ internal sealed class SeatPanel : Control
             if (nearest >= 0.22f)
                 return new Drop(DropKind.Swap, seat, false, null, rect);
 
-            // Which edge: the preview is the half of the tile the dragged player would take.
             RectangleF half;
             bool after;
             if (nearest == dx) { after = false; half = rect with { Width = rect.Width / 2 }; }
@@ -206,6 +207,7 @@ internal sealed class SeatPanel : Control
         var seats = SeatRects(frame);
         double seconds = Environment.TickCount64 / 1000.0;
         Drop drop = dragging ? DropAt(dragPoint) : default;
+        bool lobbyEmpty = Phase == PanelPhase.Setup && Options.Seats.Count == 0;
 
         foreach (var display in frame.Displays)
         {
@@ -216,11 +218,22 @@ internal sealed class SeatPanel : Control
                 g.FillPath(brush, bezel);
 
             bool empty = !Options.Seats.Any(s => SeatLayout.DisplayOf(s, frame.Displays) == display);
-            if (empty)
+            if (!empty)
+                continue;
+
+            using var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+
+            if (lobbyEmpty)
+            {
+                float pulse = (float)(0.5 + 0.5 * Math.Sin(seconds * 3));
+                using var brush = new SolidBrush(Theme.Blend(Theme.Muted, Theme.Accent, pulse));
+                g.DrawString("Press any button on a controller to join\n\nor press Enter for keyboard & mouse",
+                    promptFont, brush, rect, format);
+            }
+            else
             {
                 using var brush = new SolidBrush(Theme.Muted);
-                using var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-                g.DrawString(Phase == PanelPhase.Setup || frame.Displays.Count > 1 ? "No players\nDrag one here" : "No players",
+                g.DrawString(Phase == PanelPhase.Setup ? "No players\nMove one here with LB / RB, or drag" : "No players",
                     bodyFont, brush, rect, format);
             }
         }
@@ -273,16 +286,17 @@ internal sealed class SeatPanel : Control
 
         Color colour = Theme.Player(seat.Index);
         bool armed = Phase == PanelPhase.Live && ArmedSeat == seat.Index;
+        bool ready = Phase == PanelPhase.Setup && seat.LobbyReady;
         float pulse = armed ? (float)(0.5 + 0.5 * Math.Sin(seconds * 5)) : 0f;
 
-        float tint = armed ? 0.16f + 0.16f * pulse : dropTarget ? 0.32f : 0.09f;
+        float tint = armed ? 0.16f + 0.16f * pulse : dropTarget ? 0.32f : ready ? 0.2f : 0.09f;
 
         using (var path = RoundedRect(r, 8))
         {
             using (var fill = new SolidBrush(Theme.Blend(Theme.Surface, colour, tint)))
                 g.FillPath(fill, path);
 
-            float width = armed ? 2f + 3f * pulse : dropTarget ? 4f : 2f;
+            float width = armed ? 2f + 3f * pulse : dropTarget ? 4f : ready ? 3.5f : 2f;
             using var pen = new Pen(Color.FromArgb(faded ? 80 : 255, colour), width);
             g.DrawPath(pen, path);
         }
@@ -290,16 +304,16 @@ internal sealed class SeatPanel : Control
         var state = g.Save();
         g.SetClip(r);
 
-        // Small tiles - several monitors drawn at once, or four players on one - get smaller text
-        // rather than text cut off at the tile edge.
         bool compact = r.Height < 210 || r.Width < 170;
         Font title = compact ? compactTitleFont : titleFont;
         Font body = compact ? compactBodyFont : bodyFont;
         Font small = compact ? compactSmallFont : smallFont;
 
+        if (ready)
+            DrawReadyBadge(g, r, compact);
+
         (string main, string? detail) = Describe(seat, armed);
-        bool hasDevice = seat.Input == SeatInput.KeyboardAndMouse || seat.ControllerName is not null
-                         || Phase == PanelPhase.Setup;
+        bool hasDevice = seat.Input != SeatInput.Claim || seat.ControllerName is not null || Phase == PanelPhase.Setup;
 
         Color iconColour = armed ? Theme.Blend(Theme.Muted, colour, pulse)
                            : hasDevice ? Theme.Text : Theme.Muted;
@@ -333,19 +347,41 @@ internal sealed class SeatPanel : Control
         g.Restore(state);
     }
 
+    private void DrawReadyBadge(Graphics g, RectangleF r, bool compact)
+    {
+        Font font = compact ? compactSmallFont : labelFont;
+        const string text = "READY";
+        SizeF size = g.MeasureString(text, font);
+        var pill = new RectangleF(r.Right - size.Width - 22, r.Y + 10, size.Width + 12, size.Height + 4);
+
+        using (var path = RoundedRect(pill, pill.Height / 2))
+        using (var fill = new SolidBrush(ReadyColour))
+            g.FillPath(fill, path);
+
+        using var brush = new SolidBrush(Theme.Back);
+        g.DrawString(text, font, brush, pill.X + 6, pill.Y + 2);
+    }
+
     private (string Main, string? Detail) Describe(Seat seat, bool armed)
     {
         if (Phase == PanelPhase.Setup)
         {
-            return seat.Input == SeatInput.KeyboardAndMouse
-                ? ("Keyboard & mouse", "Click to use a controller instead")
-                : ("Controller", "Click to use keyboard & mouse instead");
+            return seat.Input switch
+            {
+                SeatInput.Pad => (seat.InputDescription, seat.LobbyReady
+                    ? "Ready  ·  B to cancel"
+                    : "A: ready  ·  D-pad: move  ·  LB/RB: monitor  ·  B: leave"),
+                SeatInput.KeyboardAndMouse => (seat.InputDescription, seat.LobbyReady
+                    ? "Ready  ·  Esc to cancel"
+                    : "Enter: ready  ·  Arrows: move  ·  Esc: leave"),
+                _ => ("Other controller", "Press a button on it once this game loads  ·  right-click to remove")
+            };
         }
 
         string? status = StatusFor?.Invoke(seat);
 
-        if (seat.Input == SeatInput.KeyboardAndMouse)
-            return ("Keyboard & mouse", status);
+        if (seat.Input != SeatInput.Claim)
+            return (seat.InputDescription, status);
 
         if (seat.ControllerName is { } name)
             return (name, status);
@@ -412,19 +448,16 @@ internal sealed class SeatPanel : Control
         using (var outline = RoundedRect(body, h * 0.46f))
             g.DrawPath(pen, outline);
 
-        // D-pad on the left.
         float arm = h * 0.15f;
         var dpad = new PointF(body.X + w * 0.25f, c.Y - h * 0.06f);
         g.DrawLine(pen, dpad.X - arm, dpad.Y, dpad.X + arm, dpad.Y);
         g.DrawLine(pen, dpad.X, dpad.Y - arm, dpad.X, dpad.Y + arm);
 
-        // Face buttons on the right.
         var face = new PointF(body.X + w * 0.75f, c.Y - h * 0.06f);
         float spread = h * 0.13f, radius = h * 0.055f;
         foreach (var (dx, dy) in new[] { (0f, -spread), (spread, 0f), (0f, spread), (-spread, 0f) })
             g.FillEllipse(brush, face.X + dx - radius, face.Y + dy - radius, radius * 2, radius * 2);
 
-        // Two sticks.
         float stick = h * 0.12f;
         g.DrawEllipse(pen, c.X - w * 0.13f - stick, c.Y + h * 0.18f - stick, stick * 2, stick * 2);
         g.DrawEllipse(pen, c.X + w * 0.13f - stick, c.Y + h * 0.18f - stick, stick * 2, stick * 2);
@@ -449,7 +482,6 @@ internal sealed class SeatPanel : Control
         {
             for (int col = 0; col < cols; col++)
             {
-                // The bottom row is a space bar.
                 if (row == rows - 1 && col > 1 && col < cols - 2)
                 {
                     if (col == 2)
@@ -463,7 +495,6 @@ internal sealed class SeatPanel : Control
             }
         }
 
-        // The mouse.
         float mw = size * 0.17f, mh = h * 1.05f;
         var mouse = new RectangleF(board.Right + size * 0.07f, c.Y - mh / 2, mw, mh);
         using (var body = RoundedRect(mouse, mw / 2))
@@ -520,6 +551,14 @@ internal sealed class SeatPanel : Control
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
+
+        if (e.Button == MouseButtons.Right)
+        {
+            if (Phase == PanelPhase.Setup && SeatAt(e.Location) is { } toRemove)
+                SeatRemoveRequested?.Invoke(toRemove);
+            return;
+        }
+
         if (e.Button != MouseButtons.Left)
             return;
 

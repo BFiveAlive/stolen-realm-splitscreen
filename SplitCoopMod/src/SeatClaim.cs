@@ -11,21 +11,25 @@ namespace SplitCoopMod
     /// <summary>
     /// Lets a player claim this window by pressing a button on the pad they are holding.
     ///
-    /// Assigning controllers by index works, but only if somebody first runs the game once to
-    /// enumerate them and then types the right number for each window - and the number Windows
-    /// shows is not the number Rewired uses, so getting it wrong silently gives two players the
-    /// same pad. Nobody should have to do that to sit down and play.
+    /// The launcher assigns Xbox-style pads before launch, by XInput slot. This is for everything
+    /// else - a PlayStation or other non-XInput controller - which the launcher cannot match to
+    /// Rewired's devices, so the player picks it in game instead.
     ///
     /// Rewired is the only thing on the machine that knows which pad is which here, and it lives
-    /// inside the game, so the claiming has to happen inside the game too. The launcher supplies a
-    /// directory and takes turns: it writes the seat it wants filled into <c>turn.txt</c>, the
-    /// instance holding that seat watches for a button press on a pad no other seat has taken, and
-    /// writes what it got back as <c>seat-N.txt</c>. One seat listens at a time, so two windows
-    /// cannot both take the credit for one press.
+    /// inside the game, so the claiming happens inside the game. The launcher supplies a directory
+    /// and takes turns: it writes the seat it wants filled into <c>turn.txt</c>, the instance holding
+    /// that seat watches for a button press on a pad nobody else has, and writes what it got back as
+    /// <c>seat-N.txt</c>. One seat listens at a time, so two windows cannot both take the credit
+    /// for one press.
     ///
-    /// The exchange is deliberately plain text. It crosses a process boundary between a
-    /// netstandard2.1 mod and a .NET 8 launcher, and a format both can parse without agreeing on a
-    /// serializer is worth more here than structure.
+    ///   turn.txt              launcher -> games   the seat that should listen next, or -1
+    ///   ready-N.txt           game N -> launcher  loaded, and can hear its controllers
+    ///   seat-N.txt            game N -> launcher  index=, name=, hardware= of the pad it took
+    ///   xinput-reserved.txt   launcher -> games   XInput slots already given to other windows
+    ///
+    /// The exchange is plain text on purpose: it crosses a process boundary between a netstandard2.1
+    /// mod and a .NET 8 launcher, and a format both can parse without a shared serializer is worth
+    /// more here than structure.
     /// </summary>
     internal static class SeatClaim
     {
@@ -34,7 +38,7 @@ namespace SplitCoopMod
         /// <summary>-srclaimdir: where the launcher and the instances leave notes for each other.</summary>
         internal static string Dir;
 
-        /// <summary>-srseat: which tile this window is, counting from 0.</summary>
+        /// <summary>-srseat: which seat this window is, counting from 0.</summary>
         internal static int Seat = -1;
 
         internal static Action<string> Trace;
@@ -44,14 +48,14 @@ namespace SplitCoopMod
         private static float nextReadAt;
         private static int currentTurn = -1;
         private static readonly HashSet<int> Taken = new HashSet<int>();
+        private static readonly HashSet<int> ReservedSlots = new HashSet<int>();
         private static int waits;
 
         /// <summary>
-        /// Runs every frame once Rewired is up.
+        /// Runs every frame once the game has started.
         ///
         /// The button poll cannot be throttled - <c>GetAnyButtonDown</c> is true for the single
-        /// frame the button goes down, and a press sampled four times a second is a press mostly
-        /// missed. Only the file reads are on a timer.
+        /// frame the button goes down. Only the file reads are on a timer.
         /// </summary>
         internal static void Tick()
         {
@@ -74,7 +78,8 @@ namespace SplitCoopMod
                 {
                     if (++waits % 600 == 0)
                         Say("seat " + Seat + " is listening; " + ReInput.controllers.joystickCount
-                            + " joystick(s) present, " + Taken.Count + " already taken");
+                            + " joystick(s) present, " + Taken.Count + " taken in game, "
+                            + ReservedSlots.Count + " XInput slot(s) reserved by the launcher");
                     return;
                 }
 
@@ -87,13 +92,7 @@ namespace SplitCoopMod
             }
         }
 
-        /// <summary>
-        /// Says this window is listening, before any turn arrives.
-        ///
-        /// The launcher would otherwise have to guess whether a silent instance is still loading or
-        /// has something wrong with it, and a game this size takes long enough to start that the
-        /// difference matters to whoever is watching the screen.
-        /// </summary>
+        /// <summary>Says this window is listening, so the launcher can tell loading from broken.</summary>
         internal static void Announce()
         {
             if (!Enabled || announced || Seat < 0 || string.IsNullOrEmpty(Dir))
@@ -119,7 +118,16 @@ namespace SplitCoopMod
                     continue;
 
                 Joystick joystick = ReInput.controllers.Joysticks[i];
-                if (joystick != null && joystick.GetAnyButtonDown())
+                if (joystick == null)
+                    continue;
+
+                // A pad the launcher already gave another window. Its owner pressing buttons in
+                // their own game must not also claim this window.
+                if (InputIsolation.IsXInput(joystick) && joystick.systemId.HasValue
+                    && ReservedSlots.Contains((int)joystick.systemId.Value))
+                    continue;
+
+                if (joystick.GetAnyButtonDown())
                     return i;
             }
 
@@ -144,11 +152,8 @@ namespace SplitCoopMod
         }
 
         /// <summary>
-        /// Whose turn it is, and which joysticks other seats have already taken.
-        ///
-        /// The seat files are the authority on what is taken rather than anything held in memory:
-        /// each window is a separate process and none of them can see another's variables, but they
-        /// can all read the same directory.
+        /// Whose turn it is, and which joysticks other seats have already taken. The files are the
+        /// authority: each window is a separate process and none can see another's variables.
         /// </summary>
         private static void ReadNotes()
         {
@@ -168,6 +173,25 @@ namespace SplitCoopMod
                 if (index >= 0)
                     Taken.Add(index);
             }
+
+            ReservedSlots.Clear();
+            string reserved = Path.Combine(Dir, "xinput-reserved.txt");
+            if (File.Exists(reserved))
+            {
+                try
+                {
+                    foreach (string line in Read(reserved).Split('\n'))
+                    {
+                        int slot;
+                        if (int.TryParse(line.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out slot))
+                            ReservedSlots.Add(slot);
+                    }
+                }
+                catch
+                {
+                    // Being rewritten; the next pass will read it.
+                }
+            }
         }
 
         private static int ReadInt(string path, int fallback)
@@ -183,7 +207,6 @@ namespace SplitCoopMod
             }
             catch
             {
-                // The launcher may be mid-write; the next pass in a quarter second will get it.
                 return fallback;
             }
         }
@@ -240,7 +263,6 @@ namespace SplitCoopMod
             }
         }
 
-        /// <summary>Controller names are vendor strings; keep them on one line and out of the format.</summary>
         private static string Sanitise(string text)
         {
             if (string.IsNullOrEmpty(text))

@@ -7,80 +7,114 @@ internal enum TileLayout { Auto, SideBySide, Stacked, Grid }
 /// <summary>How a seat gets its input.</summary>
 internal enum SeatInput
 {
-    /// <summary>The player will press a button on the pad they want for this window.</summary>
-    Controller,
+    /// <summary>An Xbox-style pad that joined in the launcher, known by its XInput slot.</summary>
+    Pad,
 
-    /// <summary>Mouse and keyboard. There can only be one of these, and it is nobody's to claim.</summary>
-    KeyboardAndMouse
+    /// <summary>Mouse and keyboard. There can only be one of these.</summary>
+    KeyboardAndMouse,
+
+    /// <summary>
+    /// Any other controller. The launcher cannot tell those apart from the game's side, so the
+    /// player presses a button on it once the game has loaded.
+    /// </summary>
+    Claim
 }
 
 /// <summary>One player: one window, one tile of a screen, one input device.</summary>
 internal sealed class Seat
 {
-    internal required int Index { get; init; }
+    /// <summary>Join order. Seat 0 hosts; it is renumbered when someone leaves.</summary>
+    internal int Index { get; set; }
 
-    internal SeatInput Input { get; set; } = SeatInput.Controller;
+    internal SeatInput Input { get; set; } = SeatInput.Claim;
+
+    /// <summary>For <see cref="SeatInput.Pad"/>: the Windows XInput slot, 0-3.</summary>
+    internal int XInputSlot { get; set; } = -1;
+
+    /// <summary>Ready in the lobby. Everyone ready starts the countdown.</summary>
+    internal bool LobbyReady { get; set; }
 
     /// <summary>The monitor this player's window is on, by Windows device name.</summary>
     internal string Display { get; set; } = string.Empty;
 
-    /// <summary>
-    /// This player's position among the players sharing their display.
-    ///
-    /// Separate from <see cref="Index"/> because the index is also who hosts and which window a
-    /// claim belongs to, and neither of those should change just because two people swapped seats.
-    /// </summary>
+    /// <summary>This player's position among the players sharing their display.</summary>
     internal int Tile { get; set; }
 
-    /// <summary>What the player claimed, once they have pressed a button. Null until then.</summary>
+    /// <summary>For <see cref="SeatInput.Claim"/>: what the player claimed in game. Null until then.</summary>
     internal string? ControllerName { get; set; }
 
-    /// <summary>True once this window has told us it is loaded and listening.</summary>
+    /// <summary>For <see cref="SeatInput.Claim"/>: this window's game is loaded and listening.</summary>
     internal bool Ready { get; set; }
 
     internal string Label => "p" + (Index + 1);
 
-    internal bool NeedsClaim => Input == SeatInput.Controller && ControllerName is null;
+    internal bool NeedsClaim => Input == SeatInput.Claim && ControllerName is null;
+
+    internal string InputDescription => Input switch
+    {
+        SeatInput.Pad => $"Controller {XInputSlot + 1}",
+        SeatInput.KeyboardAndMouse => "Keyboard & mouse",
+        _ => ControllerName ?? "Other controller"
+    };
 }
 
 internal sealed class SessionOptions
 {
+    /// <summary>Stolen Realm's party holds six characters, one per window here.</summary>
+    internal const int MaxPlayers = 6;
+
     internal string GameDir { get; set; } = GameLocator.Find() ?? string.Empty;
     internal GameMode Mode { get; set; } = GameMode.Campaign;
     internal TileLayout Layout { get; set; } = TileLayout.Auto;
     internal List<Seat> Seats { get; } = [];
 
-    internal SessionOptions() => SetPlayerCount(2);
-
     /// <summary>
-    /// Grows or shrinks the seat list, keeping what the player already set up.
-    ///
-    /// Changing the player count is the first thing anyone touches and it should not throw away
-    /// which monitor player 1 was put on.
+    /// Adds a player, beside the last one who joined. Null if the party is full or, for keyboard
+    /// and mouse, if somebody already has it.
     /// </summary>
-    internal void SetPlayerCount(int count)
+    internal Seat? AddSeat(SeatInput input, int xinputSlot = -1)
     {
-        while (Seats.Count > count)
-            Seats.RemoveAt(Seats.Count - 1);
+        if (Seats.Count >= MaxPlayers)
+            return null;
 
-        while (Seats.Count < count)
+        if (input == SeatInput.KeyboardAndMouse && Seats.Any(s => s.Input == SeatInput.KeyboardAndMouse))
+            return null;
+
+        if (input == SeatInput.Pad && Seats.Any(s => s.Input == SeatInput.Pad && s.XInputSlot == xinputSlot))
+            return null;
+
+        var seat = new Seat
         {
-            // Player 1 defaults to mouse and keyboard: it is the seat that drives menus most
-            // comfortably, and it means this works with no controllers plugged in at all.
-            // A new player joins whichever display the previous player is on, after them.
-            var previous = Seats.LastOrDefault();
+            Index = Seats.Count,
+            Input = input,
+            XInputSlot = input == SeatInput.Pad ? xinputSlot : -1,
+            Display = Seats.LastOrDefault()?.Display ?? string.Empty,
+            Tile = int.MaxValue,
 
-            Seats.Add(new Seat
-            {
-                Index = Seats.Count,
-                Input = Seats.Count == 0 ? SeatInput.KeyboardAndMouse : SeatInput.Controller,
-                Display = previous?.Display ?? string.Empty,
-                Tile = int.MaxValue
-            });
-        }
+            // Nobody is holding an "other controller" in the launcher to press ready with, so that
+            // seat is ready as soon as it is added.
+            LobbyReady = input == SeatInput.Claim
+        };
+
+        Seats.Add(seat);
+        SeatLayout.Normalize(this);
+        return seat;
+    }
+
+    internal void RemoveSeat(Seat seat)
+    {
+        if (!Seats.Remove(seat))
+            return;
+
+        for (int i = 0; i < Seats.Count; i++)
+            Seats[i].Index = i;
 
         SeatLayout.Normalize(this);
     }
+
+    internal void ClearSeats() => Seats.Clear();
+
+    internal bool AllReady => Seats.Count > 0 && Seats.All(s => s.LobbyReady);
 
     internal string ExePath => Path.Combine(GameDir, "Stolen Realm.exe");
 
@@ -103,8 +137,8 @@ internal sealed class SessionOptions
             return "SplitCoopMod is not installed in the game's BepInEx\\plugins folder. "
                  + "Without it the windows open but never join each other.";
 
-        if (Seats.Count(s => s.Input == SeatInput.KeyboardAndMouse) > 1)
-            return "Only one seat can use the keyboard and mouse.";
+        if (Seats.Count == 0)
+            return "Nobody has joined yet. Press any button on a controller, or add keyboard & mouse.";
 
         return null;
     }
@@ -139,12 +173,7 @@ internal static class GameLocator
         }
     }
 
-    /// <summary>
-    /// Steam's own list of library folders.
-    ///
-    /// Plenty of people keep games on a second drive, and guessing C:\Program Files (x86) would
-    /// send them to the folder picker for no reason.
-    /// </summary>
+    /// <summary>Steam's own list of library folders, for games kept on a second drive.</summary>
     private static IEnumerable<string> SteamLibraries()
     {
         string? steam = SteamPath();

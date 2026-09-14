@@ -10,23 +10,35 @@ address, pins each copy to one input device, and lays the windows out across the
 
 Run **`StolenRealmSplitScreen.exe`**. No scripts, no command lines.
 
-1. **Pick the number of players and the game** — Campaign or Roguelike — and, if you like, the
-   screen layout.
-2. **Set up the seats.** The picture shows every monitor you have, with one tile per player.
-   Click a player to switch them between a controller and keyboard & mouse. Then drag:
-   - onto the **middle** of another player to swap places, even across monitors;
-   - onto the **edge** of another player to share that screen with them, on that side;
-   - onto an **empty monitor** (or the empty corner of a three-player grid) to go there.
+1. **Pick the game** (Campaign or Roguelike) and, if you like, the screen layout.
+2. **Join.** Each player presses any button on their controller. Their pad rumbles and a tile
+   appears for them on the picture of your monitors. Keyboard & mouse joins with **Enter**.
+   Up to **six players**, matching Stolen Realm's party size.
+3. **Choose where you sit**, with your own controller:
 
-   So two players and two monitors can have one each or share one, and three players can split
-   one monitor while the third has the other to themselves. With more than one monitor there are
-   also **One each** and **All on main** shortcuts. Each monitor is split automatically for the
-   players on it, side by side on a landscape screen and stacked on a portrait one.
-3. **Press Launch.** The games start, join each other and fill their tiles.
-4. **Claim your controllers.** The launcher stays on top and highlights one screen at a time:
-   whoever is sitting there presses any button on their pad, and it appears on their tile. Click
-   a different tile to fill that one first. Once everyone has a controller the launcher gets out
-   of the way.
+   | Control | Action |
+   |---|---|
+   | D-pad or left stick | move your screen, swapping with whoever is there, or onto the monitor on that side |
+   | LB / RB | move to the previous / next monitor |
+   | A | ready |
+   | B | not ready; press again to leave |
+   | Start | once everyone is ready, launch without waiting |
+
+   Keyboard: arrows move, Page Up/Down change monitor, Enter readies, Esc cancels or leaves.
+   Mouse: drag a player onto another to swap, onto the edge of one to share that screen, or onto
+   an empty monitor; click to ready; right-click to remove. **One each** and **All on main** are
+   shortcuts when you have more than one monitor.
+4. **Everyone ready starts a five-second countdown**, then the games launch with every
+   controller already assigned. Nobody presses anything in the games to claim a pad.
+
+Each monitor is split automatically for the players on it: side by side or stacked for two, a
+2×2 grid for three or four, and 3×2 for five or six.
+
+**Controllers 5 and 6, and non-Xbox pads.** Windows' XInput, which the launcher reads before the
+games start, has four slots. Xbox, PowerA, most 8BitDo pads and anything shown as "XInput
+compatible" use it. For a fifth or sixth player, or a PlayStation or other controller, use
+**+ Other controller**: that player presses a button on their pad once their game has loaded,
+and the launcher highlights whose turn it is.
 
 Each window then reaches the game's party-select screen, where every player picks their own
 character.
@@ -193,7 +205,10 @@ Useful on their own if you would rather start instances by hand.
 |---|---|
 | `-srhost` | Host a direct-IP session once the main menu is up |
 | `-srjoin <ip>` | Join one |
-| `-srcontroller <n\|keyboard>` | Give this instance one joystick, or keyboard and mouse, and nothing else |
+| `-srcontroller xinput:<slot>` | Give this instance the Xbox-style pad in Windows XInput slot 0-3, and no other gamepad. What the launcher uses |
+| `-srcontroller keyboard` | Keyboard and mouse, no gamepads |
+| `-srcontroller claim` | The player presses a button on their pad once the game loads (with `-srclaimdir` and `-srseat`) |
+| `-srcontroller <n>` | Rewired's joystick index, for starting instances by hand. Can change when controllers are plugged in, so prefer `xinput:` |
 | `-srmode roguelike` | Roguelike instead of campaign |
 | `-srplayer <label>` | Names this instance's log under `BepInEx\splitcoop-logs\` |
 | `-srlistcontrollers` | Report the joysticks Rewired sees, with their indices, and do nothing else |
@@ -225,6 +240,11 @@ Measured on Windows 11, Stolen Realm (Unity 2022.3.62), BepInEx 5.4.23.5:
 | Character creation in split-screen | yes — both windows report identical stats (level 1, base health 100) and the same attribute layout, five rows each with its own −/+ buttons, confirmed by screenshot at 1280x1440 |
 | Controller setup is never saved | yes — both windows closed gracefully, and the registry's controller assignments were byte-for-byte unchanged |
 | Game start-up after a session | yes — a plain, mod-free launch afterwards has 0 errors |
+| Launcher XInput slot = game's pad | yes — Windows reported slots 0 and 1; the game listed `XInput Gamepad 1  xinput:0` and `XInput Gamepad 2  xinput:1`, and Rewired's own code builds its XInput pads from slots 0-3 with `systemId` = slot |
+| Windows given pads by slot | yes — `-srcontroller xinput:0` and `xinput:1` took "XInput Gamepad 1, system id 0" and "XInput Gamepad 2, system id 1"; both windows 0 errors, session formed, character creation opened |
+| Lobby screen | yes — builds with no warnings; screenshot shows the join prompt on both monitors, the player buttons and the 0/6 count |
+| **Joining and moving with real button presses in the lobby** | **not verified** — needs someone holding the pads: press A to join, D-pad and LB/RB to move, A to ready |
+| **Five or six players** | **not verified** — no party-size cap turned up in the game's code, but no session larger than two windows has been run, and six copies need roughly 12 GB of memory |
 | **A real button press claiming a pad** | **not verified** — two Xbox pads were connected and seen by the game, but nobody was there to press a button. The claim in the test was a simulated `seat-1.txt` in exactly the format the mod writes. |
 | **Gamepad isolation** | **not verified** — the game now sees two connected Xbox pads, but binding one needs a person to press a button (or pick it by index) and then check that the other window ignores it. |
 | **Actual play** | **not verified** — the tests reach the party-select screen and stop. Picking characters, entering combat and two people acting at once needs a human at each seat. |

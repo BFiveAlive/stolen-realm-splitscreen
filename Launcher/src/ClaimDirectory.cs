@@ -4,16 +4,13 @@ using System.Text;
 namespace SplitScreenLauncher;
 
 /// <summary>
-/// The launcher's half of the controller-claiming exchange.
+/// The launcher's half of the in-game controller-claiming exchange, used for controllers the
+/// launcher cannot match itself. See SeatClaim.cs in the mod for the other half:
 ///
-/// The game windows are the only things that can tell which pad a button press came from - they
-/// run Rewired, the launcher does not - so the launcher cannot detect a claim itself. It can only
-/// say whose turn it is and wait to be told what they got. See SeatClaim.cs in the mod for the
-/// other half:
-///
-///   turn.txt       written here    the seat that should listen next, or -1 for nobody
-///   ready-N.txt    written by N    seat N's game has loaded and can hear its controllers
-///   seat-N.txt     written by N    seat N took a controller: index=, name=, hardware=
+///   turn.txt              written here    the seat that should listen next, or -1 for nobody
+///   ready-N.txt           written by N    seat N's game has loaded and can hear its controllers
+///   seat-N.txt            written by N    seat N took a controller: index=, name=, hardware=
+///   xinput-reserved.txt   written here    XInput slots already given to windows, one per line
 /// </summary>
 internal sealed class ClaimDirectory
 {
@@ -34,6 +31,14 @@ internal sealed class ClaimDirectory
 
     internal void Disarm() => Write("turn.txt", "-1");
 
+    /// <summary>
+    /// Pads handed out by slot, so a window claiming in game does not also take one of them when
+    /// its owner presses a button in their own window.
+    /// </summary>
+    internal void ReserveXInputSlots(IEnumerable<int> slots) =>
+        Write("xinput-reserved.txt", string.Join(Environment.NewLine,
+            slots.Select(s => s.ToString(CultureInfo.InvariantCulture))));
+
     internal bool IsReady(int seat) => File.Exists(Path.Combine(Root, $"ready-{seat}.txt"));
 
     /// <summary>The name of the controller seat N claimed, or null if it has not claimed one.</summary>
@@ -45,8 +50,6 @@ internal sealed class ClaimDirectory
 
         try
         {
-            // Shared for delete too: the game replaces these files, and must not be blocked by a
-            // launcher that happens to be reading at that moment.
             using var stream = new FileStream(file, FileMode.Open, FileAccess.Read,
                 FileShare.ReadWrite | FileShare.Delete);
             using var reader = new StreamReader(stream, Encoding.UTF8);
@@ -73,9 +76,8 @@ internal sealed class ClaimDirectory
         string final = Path.Combine(Root, name);
         string temp = final + ".tmp";
 
-        // A game window may have turn.txt open for reading at the instant this replaces it, which
-        // makes the move fail. It holds the file for well under a millisecond, so a short retry is
-        // all it takes.
+        // A game window may have the file open for reading at the instant this replaces it. It
+        // holds it for well under a millisecond, so a short retry is all it takes.
         for (int attempt = 0; ; attempt++)
         {
             try

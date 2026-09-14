@@ -231,6 +231,35 @@ Read from the game's save code. Every save is `WriteAllText(X.temp)` then
   prevents collisions but not lost updates: each window serialises its own in-memory copy, so the
   last window to save a shared file wins.
 
+## Choosing controllers before any game starts
+
+The launcher reads Xbox-style pads itself, through Windows XInput, so players can join and pick
+their screens before a single game window exists. That only helps if the pad a player pressed A on
+in the launcher is provably the pad their game window gets, and it is. The link is XInput's four
+slots:
+
+- **Windows** numbers connected XInput pads by slot, 0-3. The launcher polls `XInputGetState` for
+  each slot, so it knows the slot of every pad that presses a button.
+- **Rewired**, the game's input library, creates its XInput devices from those same slots. In
+  `Rewired_Windows.dll` it builds four devices in a loop, `for (int i = 0; i < 4; i++)`, each
+  wrapping XInput user index `i`. The device reports that index as the joystick's `systemId`
+  and names the pad `"XInput " + subType + " " + (i + 1)`, which is why pads show up as
+  "XInput Gamepad 1" and "XInput Gamepad 2".
+
+So the launcher passes `-srcontroller xinput:N`, and the mod gives the window the Rewired joystick
+that is XInput with `systemId == N`. Measured on the test machine with two pads: Windows reported
+slots 0 and 1 connected, and the game listed `index 0 : XInput Gamepad 1  xinput:0` and
+`index 1 : XInput Gamepad 2  xinput:1`.
+
+Matching by slot is also sturdier than Rewired's joystick index. The index depends on detection
+order and shifts when another controller is plugged in; the slot does not.
+
+The limits come from XInput. It has four slots, so a fifth or sixth pad, or any non-XInput
+controller such as a DualSense, has no slot to match. Those reach the game through Raw Input or
+DirectInput with identifiers the launcher cannot line up with Rewired's, so they keep the in-game
+press-a-button claim below. The launcher also writes the slots it handed out to
+`xinput-reserved.txt`, so a window claiming in game never takes a pad another window already owns.
+
 ## Claiming a controller by pressing a button on it
 
 Giving each window a pad by index works, but it needs someone to enumerate the controllers first

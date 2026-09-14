@@ -33,7 +33,9 @@ internal static class TileMath
 
             default:
             {
-                int cols = count == 1 ? 1 : 2;
+                // Three across for five or six players: 3x2 keeps every tile the same shape as a
+                // 2x2 tile on a wide screen, where 2x3 would make them short and very wide.
+                int cols = count == 1 ? 1 : count <= 4 ? 2 : 3;
                 int rows = (int)Math.Ceiling(count / (double)cols);
                 int w = bounds.Width / cols;
                 int h = bounds.Height / rows;

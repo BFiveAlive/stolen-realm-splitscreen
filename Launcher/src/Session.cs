@@ -6,9 +6,8 @@ namespace SplitScreenLauncher;
 /// <summary>
 /// Starts one game per player, joins them together and puts each window in its tile.
 ///
-/// Everything tools\Start-SplitScreen.ps1 does, with one improvement it could not easily make:
-/// rather than waiting a fixed 30 seconds for the host, this watches the host's own trace for the
-/// moment its session is actually open, and starts everyone else then.
+/// Rather than waiting a fixed time for the host, this watches the host's own trace for the moment
+/// its session is actually open, and starts everyone else then.
 /// </summary>
 internal sealed class Session
 {
@@ -68,6 +67,7 @@ internal sealed class Session
         Reset(WorkDir);
         Reset(TraceDir);
         Claims.Reset();
+        Claims.ReserveXInputSlots(options.Seats.Where(s => s.Input == SeatInput.Pad).Select(s => s.XInputSlot));
 
         SeatLayout.Normalize(options);
         var displays = SeatLayout.Displays();
@@ -97,11 +97,8 @@ internal sealed class Session
     }
 
     /// <summary>
-    /// Moves each window to its seat's tile, if it is not there already.
-    ///
-    /// The layout is worked out afresh each time, so a player moved to another monitor or another
-    /// part of the screen in the launcher is moved in the game as well. A window already in place
-    /// is left alone rather than re-shown, which would otherwise flicker it.
+    /// Moves each window to its seat's tile, if it is not there already. The layout is worked out
+    /// afresh each time, so a rearrangement in the launcher moves the game windows too.
     /// </summary>
     internal void PlaceWindows()
     {
@@ -202,10 +199,21 @@ internal sealed class Session
             "-srmode", options.Mode == GameMode.Roguelike ? "roguelike" : "campaign",
             "-srseat", Int(seat.Index));
 
-        if (seat.Input == SeatInput.KeyboardAndMouse)
-            Add("-srcontroller", "keyboard");
-        else
-            Add("-srcontroller", "claim", "-srclaimdir", Claims.Root);
+        switch (seat.Input)
+        {
+            case SeatInput.KeyboardAndMouse:
+                Add("-srcontroller", "keyboard");
+                break;
+
+            case SeatInput.Pad:
+                // The pad chosen in the lobby, by the XInput slot the game's input library also uses.
+                Add("-srcontroller", "xinput:" + Int(seat.XInputSlot));
+                break;
+
+            default:
+                Add("-srcontroller", "claim", "-srclaimdir", Claims.Root);
+                break;
+        }
 
         if (seat.Index == 0)
             Add("-srhost");
@@ -217,8 +225,7 @@ internal sealed class Session
 
         started.Add((seat, process));
         log($"Started player {seat.Index + 1} ({(seat.Index == 0 ? "host" : "joining")}, "
-            + $"{(seat.Input == SeatInput.KeyboardAndMouse ? "keyboard & mouse" : "controller")}, "
-            + $"{tile.Width}x{tile.Height} at {tile.X},{tile.Y}), pid {process.Id}");
+            + $"{seat.InputDescription}, {tile.Width}x{tile.Height} at {tile.X},{tile.Y}), pid {process.Id}");
     }
 
     private async Task WaitForHostAsync(IProgress<string> progress, CancellationToken ct)

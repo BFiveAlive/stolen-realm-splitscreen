@@ -153,4 +153,74 @@ internal static class SeatLayout
 
         Normalize(options);
     }
+
+    /// <summary>
+    /// The seat whose tile lies in direction (dx, dy) from this one, across every monitor, or null.
+    ///
+    /// Scored on distance along the direction plus twice the sideways offset, so pressing right
+    /// picks the tile beside you rather than a nearer one diagonally below.
+    /// </summary>
+    internal static Seat? NeighbourInDirection(SessionOptions options, Seat seat, int dx, int dy)
+    {
+        var layout = Compute(options);
+        if (!layout.TryGetValue(seat, out Rectangle from))
+            return null;
+
+        Seat? best = null;
+        double bestScore = double.MaxValue;
+
+        foreach (var (other, rect) in layout)
+        {
+            if (other == seat)
+                continue;
+
+            double score = DirectionalScore(from, rect, dx, dy);
+            if (score < bestScore)
+            {
+                bestScore = score;
+                best = other;
+            }
+        }
+
+        return best;
+    }
+
+    /// <summary>The monitor in direction (dx, dy) from this seat's monitor, or null.</summary>
+    internal static Display? DisplayInDirection(SessionOptions options, Seat seat, int dx, int dy)
+    {
+        var displays = Displays();
+        var current = DisplayOf(seat, displays);
+
+        return displays
+            .Where(d => d != current)
+            .Select(d => (Display: d, Score: DirectionalScore(current.Bounds, d.Bounds, dx, dy)))
+            .Where(x => x.Score < double.MaxValue)
+            .OrderBy(x => x.Score)
+            .Select(x => x.Display)
+            .FirstOrDefault();
+    }
+
+    /// <summary>The next or previous monitor, left to right, wrapping round.</summary>
+    internal static Display? CycleDisplay(Seat seat, int step)
+    {
+        var displays = Displays();
+        if (displays.Count < 2)
+            return null;
+
+        int at = displays.IndexOf(DisplayOf(seat, displays));
+        return displays[((at + step) % displays.Count + displays.Count) % displays.Count];
+    }
+
+    private static double DirectionalScore(Rectangle from, Rectangle to, int dx, int dy)
+    {
+        double fx = from.X + from.Width / 2.0, fy = from.Y + from.Height / 2.0;
+        double vx = to.X + to.Width / 2.0 - fx, vy = to.Y + to.Height / 2.0 - fy;
+
+        double along = vx * dx + vy * dy;
+        if (along <= 1)
+            return double.MaxValue;
+
+        double across = Math.Abs(vx * dy - vy * dx);
+        return along + across * 2;
+    }
 }

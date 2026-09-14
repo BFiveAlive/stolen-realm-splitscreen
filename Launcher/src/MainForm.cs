@@ -1,7 +1,8 @@
 namespace SplitScreenLauncher;
 
 /// <summary>
-/// The whole launcher: choose a game, choose the players, press Launch, press a button.
+/// The whole launcher: everyone presses a button to join, moves their screen where they want it,
+/// readies up, and the games start with every controller already assigned.
 /// </summary>
 internal sealed class MainForm : Form
 {
@@ -16,9 +17,15 @@ internal sealed class MainForm : Form
     private static readonly string LogFile =
         Path.Combine(Path.GetTempPath(), "stolen-realm-splitscreen-launcher.log");
 
+    private const int CountdownSeconds = 5;
+
     private readonly SessionOptions options;
     private readonly SeatPanel panel;
-    private readonly List<RadioButton> playerButtons = [];
+    private readonly PadPoller pads = new();
+    private readonly Button addKeyboardButton;
+    private readonly Button addOtherButton;
+    private readonly Button clearButton;
+    private readonly Label playerCountLabel;
     private readonly RadioButton campaignButton;
     private readonly RadioButton roguelikeButton;
     private readonly ComboBox layoutBox;
@@ -32,6 +39,8 @@ internal sealed class MainForm : Form
     private readonly CheckBox logToggle;
     private readonly TextBox logBox;
     private readonly System.Windows.Forms.Timer liveTimer = new() { Interval = 250 };
+    private readonly System.Windows.Forms.Timer padTimer = new() { Interval = 16 };
+    private readonly List<Button> monitorButtons = [];
 
     private Session? session;
     private CancellationTokenSource? launchCancel;
@@ -40,6 +49,7 @@ internal sealed class MainForm : Form
     private bool minimisedAfterClaims;
     private Dictionary<string, string> verdicts = new(StringComparer.OrdinalIgnoreCase);
     private DateTime nextVerdictAt;
+    private DateTime? countdownEndsAt;
 
     internal MainForm()
     {
@@ -52,8 +62,9 @@ internal sealed class MainForm : Form
         BackColor = Theme.Back;
         ForeColor = Theme.Text;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(920, 720);
-        MinimumSize = new Size(740, 600);
+        ClientSize = new Size(1000, 760);
+        MinimumSize = new Size(780, 620);
+        KeyPreview = true;
 
         // ---------------------------------------------------------------- header
         var header = new FlowLayoutPanel
@@ -67,28 +78,35 @@ internal sealed class MainForm : Form
         });
         header.Controls.Add(new Label
         {
-            Text = "Every player gets their own window, camera and controller.",
+            Text = "Every player gets their own window, camera and controller. Up to six players.",
             AutoSize = true, ForeColor = Theme.Muted, Margin = new Padding(2, 0, 0, 14)
         });
 
-        // ---------------------------------------------------------------- choices
-        var playersFlow = Row();
-        for (int n = 1; n <= 4; n++)
-        {
-            int count = n;
-            var button = Toggle(n.ToString(), 46);
-            button.CheckedChanged += (_, _) =>
-            {
-                if (button.Checked)
-                    OnPlayerCount(count);
-            };
-            button.Checked = options.Seats.Count == n;
-            playerButtons.Add(button);
-            playersFlow.Controls.Add(button);
-        }
+        // ---------------------------------------------------------------- players
+        addKeyboardButton = SmallButton("+ Keyboard & mouse", 164);
+        addKeyboardButton.Click += (_, _) => JoinKeyboard();
 
-        campaignButton = Toggle("Campaign", 112);
-        roguelikeButton = Toggle("Roguelike", 112);
+        addOtherButton = SmallButton("+ Other controller", 154);
+        addOtherButton.Click += (_, _) => JoinOther();
+
+        clearButton = SmallButton("Clear", 70);
+        clearButton.Click += (_, _) =>
+        {
+            options.ClearSeats();
+            LobbyChanged("Cleared every player.");
+        };
+
+        playerCountLabel = new Label { AutoSize = true, ForeColor = Theme.Muted, Margin = new Padding(6, 9, 0, 0) };
+
+        var playersFlow = Row();
+        playersFlow.Controls.Add(addKeyboardButton);
+        playersFlow.Controls.Add(addOtherButton);
+        playersFlow.Controls.Add(clearButton);
+        playersFlow.Controls.Add(playerCountLabel);
+
+        // ---------------------------------------------------------------- game and layout
+        campaignButton = Toggle("Campaign", 104);
+        roguelikeButton = Toggle("Roguelike", 104);
         campaignButton.CheckedChanged += (_, _) => { if (campaignButton.Checked) options.Mode = GameMode.Campaign; };
         roguelikeButton.CheckedChanged += (_, _) => { if (roguelikeButton.Checked) options.Mode = GameMode.Roguelike; };
         campaignButton.Checked = options.Mode == GameMode.Campaign;
@@ -100,7 +118,7 @@ internal sealed class MainForm : Form
 
         layoutBox = new ComboBox
         {
-            DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat, Width = 150,
+            DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat, Width = 140,
             BackColor = Theme.Surface, ForeColor = Theme.Text, Margin = new Padding(0, 4, 0, 0)
         };
         foreach (var (text, _) in Layouts)
@@ -109,6 +127,7 @@ internal sealed class MainForm : Form
         layoutBox.SelectedIndexChanged += (_, _) =>
         {
             options.Layout = Layouts[layoutBox.SelectedIndex].Layout;
+            Settings.Save(options);
             panel!.Invalidate();
         };
 
@@ -117,19 +136,12 @@ internal sealed class MainForm : Form
         choices.Controls.Add(Group("Game", modeFlow));
         choices.Controls.Add(Group("Screen layout", layoutBox));
 
-        // Shortcuts for the two arrangements people want most. Anything else - two players sharing
-        // one monitor while a third has the other - is a drag in the picture below.
         var displays = SeatLayout.Displays();
         if (displays.Count > 1)
         {
-            var oneEach = MakeButton("One each", 104, primary: false);
-            var allOnMain = MakeButton("All on main", 116, primary: false);
-
-            foreach (var button in new[] { oneEach, allOnMain })
-            {
-                button.Height = 36;
-                button.Margin = new Padding(0, 0, 6, 0);
-            }
+            var oneEach = SmallButton("One each", 96);
+            var allOnMain = SmallButton("All on main", 108);
+            monitorButtons.AddRange([oneEach, allOnMain]);
 
             oneEach.Click += (_, _) =>
             {
@@ -182,6 +194,7 @@ internal sealed class MainForm : Form
             StatusFor = seat => verdicts.TryGetValue(seat.Label, out string? v) ? v : null
         };
         panel.SeatClicked += OnSeatClicked;
+        panel.SeatRemoveRequested += seat => { if (session is null) RemovePlayer(seat); };
         panel.SeatsSwapped += (a, b) =>
         {
             SeatLayout.Swap(a, b);
@@ -200,7 +213,7 @@ internal sealed class MainForm : Form
 
         hintLabel = new Label
         {
-            Dock = DockStyle.Fill, AutoSize = false, Height = 48, ForeColor = Theme.Muted, UseMnemonic = false,
+            Dock = DockStyle.Fill, AutoSize = false, Height = 52, ForeColor = Theme.Muted, UseMnemonic = false,
             TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(0, 6, 0, 0)
         };
 
@@ -208,7 +221,7 @@ internal sealed class MainForm : Form
         statusLabel = new Label
         {
             Dock = DockStyle.Fill, AutoSize = false, Height = 40, AutoEllipsis = true, UseMnemonic = false,
-            TextAlign = ContentAlignment.MiddleLeft, ForeColor = Theme.Text, Text = "Ready when you are."
+            TextAlign = ContentAlignment.MiddleLeft, ForeColor = Theme.Text
         };
 
         logToggle = new CheckBox
@@ -230,7 +243,7 @@ internal sealed class MainForm : Form
         };
 
         launchButton = MakeButton("Launch", 150, primary: true);
-        launchButton.Click += OnLaunch;
+        launchButton.Click += (_, _) => StartLaunch();
 
         var bar = new TableLayoutPanel
         {
@@ -248,7 +261,7 @@ internal sealed class MainForm : Form
         logBox = new TextBox
         {
             Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill,
-            Height = 150, Visible = false, BorderStyle = BorderStyle.None,
+            Height = 150, Visible = false, BorderStyle = BorderStyle.None, TabStop = false,
             BackColor = Theme.Surface, ForeColor = Theme.Muted, Font = new Font("Consolas", 9f),
             Margin = new Padding(0, 10, 0, 0)
         };
@@ -279,11 +292,12 @@ internal sealed class MainForm : Form
 
         liveTimer.Tick += (_, _) => OnLiveTick();
 
-        UpdateHint();
+        pads.ButtonPressed += OnPadButton;
+        pads.Disconnected += OnPadDisconnected;
+        padTimer.Tick += (_, _) => OnPadTick();
+        padTimer.Start();
 
-        string? problem = options.Problem();
-        if (problem is not null)
-            SetStatus(problem);
+        LobbyChanged(null);
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -295,20 +309,293 @@ internal sealed class MainForm : Form
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         Settings.Save(options);
+        padTimer.Stop();
         liveTimer.Stop();
         launchCancel?.Cancel();
         base.OnFormClosing(e);
     }
 
-    // -------------------------------------------------------------------- setup
+    // -------------------------------------------------------------------- lobby: joining
 
-    private void OnPlayerCount(int count)
+    private void JoinPad(int slot)
+    {
+        if (options.AddSeat(SeatInput.Pad, slot) is { } seat)
+        {
+            PadPoller.Rumble(slot, 180);
+            LobbyChanged($"Controller {slot + 1} joined as player {seat.Index + 1}.");
+        }
+        else if (options.Seats.Count >= SessionOptions.MaxPlayers)
+        {
+            LobbyChanged($"Controller {slot + 1} could not join: the party is full ({SessionOptions.MaxPlayers} players).");
+        }
+    }
+
+    private void JoinKeyboard()
     {
         if (session is not null)
             return;
 
-        options.SetPlayerCount(count);
-        panel?.Invalidate();
+        if (options.AddSeat(SeatInput.KeyboardAndMouse) is { } seat)
+            LobbyChanged($"Keyboard & mouse joined as player {seat.Index + 1}.");
+        else
+            LobbyChanged(options.Seats.Count >= SessionOptions.MaxPlayers
+                ? "The party is full."
+                : "Keyboard & mouse has already joined.");
+    }
+
+    private void JoinOther()
+    {
+        if (session is not null)
+            return;
+
+        if (options.AddSeat(SeatInput.Claim) is { } seat)
+            LobbyChanged($"Added player {seat.Index + 1} with another controller; they press a button on it once their game loads.");
+        else
+            LobbyChanged("The party is full.");
+    }
+
+    private void RemovePlayer(Seat seat)
+    {
+        int number = seat.Index + 1;
+        string what = seat.InputDescription;
+        options.RemoveSeat(seat);
+        LobbyChanged($"Player {number} ({what}) left.");
+    }
+
+    // -------------------------------------------------------------------- lobby: controllers
+
+    private void OnPadTick()
+    {
+        pads.Poll();
+
+        if (countdownEndsAt is not { } ends || session is not null)
+            return;
+
+        double remaining = (ends - DateTime.UtcNow).TotalSeconds;
+        if (remaining <= 0)
+        {
+            countdownEndsAt = null;
+            StartLaunch();
+            return;
+        }
+
+        SetStatus($"Everyone is ready. Launching in {Math.Ceiling(remaining):0}…  (B or Esc to wait)");
+    }
+
+    private void OnPadButton(int slot, PadButton button)
+    {
+        if (session is not null)
+            return;
+
+        var seat = options.Seats.FirstOrDefault(s => s.Input == SeatInput.Pad && s.XInputSlot == slot);
+
+        if (seat is null)
+        {
+            // Any button joins, except B - a player backing out should not land straight back in.
+            if (button != PadButton.B)
+                JoinPad(slot);
+            return;
+        }
+
+        switch (button)
+        {
+            case PadButton.A:
+            case PadButton.Start:
+                if (!seat.LobbyReady)
+                {
+                    seat.LobbyReady = true;
+                    PadPoller.Rumble(slot, 90, 30000);
+                    LobbyChanged($"Player {seat.Index + 1} is ready.");
+                }
+                else if (button == PadButton.Start && options.AllReady)
+                {
+                    // Start with everyone ready skips the rest of the countdown.
+                    countdownEndsAt = DateTime.UtcNow;
+                }
+                break;
+
+            case PadButton.B:
+                if (countdownEndsAt is not null || seat.LobbyReady)
+                {
+                    seat.LobbyReady = false;
+                    LobbyChanged($"Player {seat.Index + 1} is not ready.");
+                }
+                else
+                {
+                    RemovePlayer(seat);
+                }
+                break;
+
+            case PadButton.Left: MoveSeat(seat, -1, 0); break;
+            case PadButton.Right: MoveSeat(seat, 1, 0); break;
+            case PadButton.Up: MoveSeat(seat, 0, -1); break;
+            case PadButton.Down: MoveSeat(seat, 0, 1); break;
+            case PadButton.LeftShoulder: ChangeMonitor(seat, -1); break;
+            case PadButton.RightShoulder: ChangeMonitor(seat, 1); break;
+        }
+    }
+
+    private void OnPadDisconnected(int slot)
+    {
+        if (session is not null)
+            return;
+
+        if (options.Seats.FirstOrDefault(s => s.Input == SeatInput.Pad && s.XInputSlot == slot) is { } seat)
+        {
+            int number = seat.Index + 1;
+            options.RemoveSeat(seat);
+            LobbyChanged($"Controller {slot + 1} disconnected, so player {number} left. Press a button on it to join again.");
+        }
+    }
+
+    /// <summary>
+    /// The keyboard player's controls. Handled before any focused button sees the key, so Enter
+    /// never also presses whichever button happens to have focus.
+    /// </summary>
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (session is null && ActiveControl is not TextBox)
+        {
+            var keyboard = options.Seats.FirstOrDefault(s => s.Input == SeatInput.KeyboardAndMouse);
+
+            switch (keyData)
+            {
+                case Keys.Enter:
+                    if (keyboard is null)
+                        JoinKeyboard();
+                    else if (!keyboard.LobbyReady)
+                    {
+                        keyboard.LobbyReady = true;
+                        LobbyChanged($"Player {keyboard.Index + 1} is ready.");
+                    }
+                    else if (options.AllReady)
+                        countdownEndsAt = DateTime.UtcNow;
+                    return true;
+
+                case Keys.Escape when keyboard is not null:
+                    if (countdownEndsAt is not null || keyboard.LobbyReady)
+                    {
+                        keyboard.LobbyReady = false;
+                        LobbyChanged($"Player {keyboard.Index + 1} is not ready.");
+                    }
+                    else
+                    {
+                        RemovePlayer(keyboard);
+                    }
+                    return true;
+
+                case Keys.Left when keyboard is not null: MoveSeat(keyboard, -1, 0); return true;
+                case Keys.Right when keyboard is not null: MoveSeat(keyboard, 1, 0); return true;
+                case Keys.Up when keyboard is not null: MoveSeat(keyboard, 0, -1); return true;
+                case Keys.Down when keyboard is not null: MoveSeat(keyboard, 0, 1); return true;
+                case Keys.PageUp when keyboard is not null: ChangeMonitor(keyboard, -1); return true;
+                case Keys.PageDown when keyboard is not null: ChangeMonitor(keyboard, 1); return true;
+            }
+        }
+
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    /// <summary>
+    /// Moves a player's screen one step in a direction: into the neighbouring position, swapping
+    /// with whoever is there, or onto the monitor on that side when there is nobody to swap with.
+    /// </summary>
+    private void MoveSeat(Seat seat, int dx, int dy)
+    {
+        if (SeatLayout.NeighbourInDirection(options, seat, dx, dy) is { } neighbour)
+        {
+            SeatLayout.Swap(seat, neighbour);
+            SeatsRearranged($"Player {seat.Index + 1} swapped with player {neighbour.Index + 1}.");
+        }
+        else if (SeatLayout.DisplayInDirection(options, seat, dx, dy) is { } display)
+        {
+            SeatLayout.MoveTo(options, seat, display.DeviceName, int.MaxValue);
+            SeatsRearranged($"Player {seat.Index + 1} moved to display {display.Number}.");
+        }
+    }
+
+    private void ChangeMonitor(Seat seat, int step)
+    {
+        if (SeatLayout.CycleDisplay(seat, step) is { } display)
+        {
+            SeatLayout.MoveTo(options, seat, display.DeviceName, int.MaxValue);
+            SeatsRearranged($"Player {seat.Index + 1} moved to display {display.Number}.");
+        }
+    }
+
+    private void OnSeatClicked(Seat seat)
+    {
+        if (session is null)
+        {
+            // The mouse can ready anyone, for a player whose hands are busy or a seat added by
+            // button. Other-controller seats are always ready, so clicking those does nothing.
+            if (seat.Input != SeatInput.Claim)
+            {
+                seat.LobbyReady = !seat.LobbyReady;
+                LobbyChanged($"Player {seat.Index + 1} is {(seat.LobbyReady ? "ready" : "not ready")}.");
+            }
+            return;
+        }
+
+        // Clicking a screen with no controller yet makes it the one listening - including after
+        // "skip", in case someone turns up late with a pad.
+        if (seat.NeedsClaim)
+        {
+            claimingDone = false;
+            TopMost = true;
+            skipButton.Visible = true;
+            Arm(seat);
+        }
+    }
+
+    /// <summary>
+    /// After anything changes in the lobby. Everyone ready starts - or restarts - the countdown,
+    /// so a last-second move never launches before the mover has seen where they ended up.
+    /// </summary>
+    private void LobbyChanged(string? message)
+    {
+        if (message is not null)
+            Log(message);
+
+        if (session is null)
+        {
+            if (options.AllReady)
+                countdownEndsAt = DateTime.UtcNow.AddSeconds(CountdownSeconds);
+            else
+            {
+                countdownEndsAt = null;
+                int ready = options.Seats.Count(s => s.LobbyReady);
+                SetStatus(options.Seats.Count == 0
+                    ? "Waiting for players to join."
+                    : $"{options.Seats.Count} of {SessionOptions.MaxPlayers} players joined, {ready} ready.");
+            }
+        }
+
+        playerCountLabel.Text = $"{options.Seats.Count}/{SessionOptions.MaxPlayers}";
+        addKeyboardButton.Enabled = session is null && !options.Seats.Any(s => s.Input == SeatInput.KeyboardAndMouse)
+                                    && options.Seats.Count < SessionOptions.MaxPlayers;
+        addOtherButton.Enabled = session is null && options.Seats.Count < SessionOptions.MaxPlayers;
+        clearButton.Enabled = session is null && options.Seats.Count > 0;
+
+        UpdateHint();
+        panel.Invalidate();
+    }
+
+    /// <summary>
+    /// After any rearrangement. With games running the windows follow straight away - including
+    /// onto another monitor - so the picture and the screens never disagree.
+    /// </summary>
+    private void SeatsRearranged(string message)
+    {
+        session?.PlaceWindows();
+
+        if (session is null)
+            LobbyChanged(message);
+        else
+        {
+            Log(message);
+            panel.Invalidate();
+        }
     }
 
     private void OnBrowse(object? sender, EventArgs e)
@@ -333,63 +620,33 @@ internal sealed class MainForm : Form
         options.GameDir = dialog.SelectedPath;
         gameDirBox.Text = options.GameDir;
         Settings.Save(options);
-        SetStatus(options.Problem() ?? "Ready when you are.");
-    }
-
-    private void OnSeatClicked(Seat seat)
-    {
-        if (session is null)
-        {
-            // Only one seat can have the keyboard, so giving it to one takes it from the other.
-            if (seat.Input == SeatInput.KeyboardAndMouse)
-            {
-                seat.Input = SeatInput.Controller;
-            }
-            else
-            {
-                foreach (var other in options.Seats)
-                    other.Input = SeatInput.Controller;
-                seat.Input = SeatInput.KeyboardAndMouse;
-            }
-
-            panel.Invalidate();
-            return;
-        }
-
-        // Clicking a screen with no controller yet makes it the one listening - including after
-        // "skip", in case someone turns up late with a pad.
-        if (seat.NeedsClaim)
-        {
-            claimingDone = false;
-            TopMost = true;
-            skipButton.Visible = true;
-            Arm(seat);
-        }
-    }
-
-    /// <summary>
-    /// After any drag in the seating plan. With games running the windows follow straight away -
-    /// including onto another monitor - so the picture and the screens never disagree.
-    /// </summary>
-    private void SeatsRearranged(string message)
-    {
-        session?.PlaceWindows();
-        panel.Invalidate();
-
-        if (session is not null)
-            Log(message);
-        else
-            Settings.Save(options);
+        LobbyChanged(null);
     }
 
     // -------------------------------------------------------------------- launch
 
-    private async void OnLaunch(object? sender, EventArgs e)
+    private async void StartLaunch()
     {
+        if (session is not null)
+            return;
+
+        countdownEndsAt = null;
+
         string? problem = options.Problem();
         if (problem is not null)
         {
             MessageBox.Show(this, problem, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            LobbyChanged(null);
+            return;
+        }
+
+        // A pad that was unplugged after joining would launch a window waiting for nothing.
+        var missing = options.Seats.Where(s => s.Input == SeatInput.Pad && !pads.IsConnected(s.XInputSlot)).ToList();
+        if (missing.Count > 0)
+        {
+            foreach (var seat in missing)
+                options.RemoveSeat(seat);
+            LobbyChanged("Removed players whose controller is no longer connected. Press a button on it to join again.");
             return;
         }
 
@@ -400,7 +657,6 @@ internal sealed class MainForm : Form
         }
         catch (Exception ex)
         {
-            // Worth knowing about, but never a reason not to launch.
             Log("Could not check the game's saved controller assignments: " + ex.Message);
         }
 
@@ -424,6 +680,9 @@ internal sealed class MainForm : Form
         if (System.Diagnostics.Process.GetProcessesByName("steam").Length == 0)
             Log("Steam does not seem to be running. The game uses it for networking, so start Steam if the windows do not connect.");
 
+        if (options.Seats.Count >= 5)
+            Log($"{options.Seats.Count} copies of the game use a lot of memory - roughly 2 GB each.");
+
         Settings.Save(options);
 
         foreach (var seat in options.Seats)
@@ -439,10 +698,10 @@ internal sealed class MainForm : Form
         minimisedAfterClaims = false;
 
         SetLive(true);
+        LobbyChanged($"Launching {options.Seats.Count} player(s): "
+                     + string.Join(", ", options.Seats.Select(s => $"P{s.Index + 1} {s.InputDescription}")) + ".");
 
-        // Kept above the game windows while anyone still has to claim a controller: the windows
-        // are about to cover the whole screen, and the prompt telling people what to press lives
-        // here.
+        // Above the game windows only while someone still has to claim a controller in game.
         TopMost = !claimingDone;
         liveTimer.Start();
 
@@ -478,16 +737,15 @@ internal sealed class MainForm : Form
 
         var claims = session.Claims;
 
-        foreach (var seat in options.Seats)
+        foreach (var seat in options.Seats.Where(s => s.Input == SeatInput.Claim))
         {
-            if (!seat.Ready && seat.Input == SeatInput.Controller && claims.IsReady(seat.Index))
+            if (!seat.Ready && claims.IsReady(seat.Index))
             {
                 seat.Ready = true;
                 Log($"Player {seat.Index + 1}'s game is listening for a controller.");
             }
 
-            if (seat.Input == SeatInput.Controller && seat.ControllerName is null
-                && claims.ClaimedController(seat.Index) is { } name)
+            if (seat.ControllerName is null && claims.ClaimedController(seat.Index) is { } name)
             {
                 seat.ControllerName = name;
                 Log($"Player {seat.Index + 1} took {name}.");
@@ -527,8 +785,7 @@ internal sealed class MainForm : Form
 
         if (!launching && claimingDone && !minimisedAfterClaims)
         {
-            // Out of the way once there is nothing left to set up. It stays in the taskbar for
-            // swapping seats or stopping the session.
+            // Out of the way once there is nothing left to set up.
             minimisedAfterClaims = true;
             WindowState = FormWindowState.Minimized;
         }
@@ -561,7 +818,7 @@ internal sealed class MainForm : Form
         Log(unclaimed.Count == 0
             ? "Every player has their input."
             : $"No controller for {string.Join(", ", unclaimed.Select(s => "player " + (s.Index + 1)))}; "
-              + "those windows will respond to every controller until one is claimed.");
+              + "those windows will respond to any controller nobody else has.");
 
         UpdateHint();
         panel.Invalidate();
@@ -581,24 +838,23 @@ internal sealed class MainForm : Form
         {
             seat.ControllerName = null;
             seat.Ready = false;
+
+            // Back to the lobby unready, so the countdown does not immediately start again.
+            seat.LobbyReady = seat.Input == SeatInput.Claim;
         }
 
         if (WindowState == FormWindowState.Minimized)
             WindowState = FormWindowState.Normal;
 
         SetLive(false);
+        LobbyChanged(message);
         SetStatus(message);
-        Log(message);
-        UpdateHint();
     }
 
     // -------------------------------------------------------------------- presentation
 
     private void SetLive(bool live)
     {
-        foreach (var button in playerButtons)
-            button.Enabled = !live;
-
         campaignButton.Enabled = roguelikeButton.Enabled = !live;
         layoutBox.Enabled = browseButton.Enabled = !live;
         launchButton.Enabled = !live;
@@ -613,23 +869,24 @@ internal sealed class MainForm : Form
     {
         if (session is null)
         {
-            hintLabel.Text = "Click a player to switch between controller and keyboard & mouse. Drag a player onto another "
-                           + "to swap, onto the edge of one to share that screen, or onto an empty monitor. "
-                           + "Press Launch when everyone is ready.";
+            hintLabel.Text = options.Seats.Count == 0
+                ? "Press any button on an Xbox-style controller to join (up to 4), or Enter for keyboard & mouse. "
+                  + "Players 5 and 6, or a PlayStation or other controller, use + Other controller."
+                : "Controller: D-pad or stick moves your screen, LB/RB changes monitor, A is ready, B cancels or leaves. "
+                  + "Keyboard: Enter, arrows, Page Up/Down, Esc. Mouse: drag to move, click to ready, right-click to remove. "
+                  + "When everyone is ready the games start.";
             return;
         }
 
         if (panel.ArmedSeat >= 0)
         {
             var seat = options.Seats[panel.ArmedSeat];
-            hintLabel.Text = $"Player {seat.Index + 1}: pick up the controller you want and press any button on it. "
-                           + "It will control the highlighted screen."
+            hintLabel.Text = $"Player {seat.Index + 1}: press any button on your controller. It will control the highlighted screen."
                            + (seat.Ready ? string.Empty : " That screen's game is still loading, and starts listening once it appears.");
             return;
         }
 
-        hintLabel.Text = "Drag a screen onto another to swap those windows. "
-                       + "Click a screen with no controller to give it one. Stop closes every game window.";
+        hintLabel.Text = "Drag a screen onto another to swap those windows. Stop closes every game window.";
     }
 
     private void SetStatus(string text) => statusLabel.Text = text;
@@ -657,7 +914,7 @@ internal sealed class MainForm : Form
         var box = new FlowLayoutPanel
         {
             FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false,
-            Margin = new Padding(0, 0, 34, 0)
+            Margin = new Padding(0, 0, 30, 8)
         };
 
         box.Controls.Add(new Label
@@ -684,6 +941,15 @@ internal sealed class MainForm : Form
         button.FlatAppearance.MouseOverBackColor = Theme.Hover;
         button.CheckedChanged += (_, _) => button.ForeColor = button.Checked ? Theme.Back : Theme.Text;
 
+        return button;
+    }
+
+    private static Button SmallButton(string text, int width)
+    {
+        var button = MakeButton(text, width, primary: false);
+        button.Height = 36;
+        button.Margin = new Padding(0, 0, 6, 0);
+        button.UseMnemonic = false;
         return button;
     }
 

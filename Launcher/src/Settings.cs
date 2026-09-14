@@ -3,12 +3,10 @@ using System.Globalization;
 namespace SplitScreenLauncher;
 
 /// <summary>
-/// Remembers the last setup, so the second evening of play is one click rather than five.
+/// Remembers the game folder, mode and layout between runs.
 ///
-/// Controller claims are deliberately not remembered: which pad Rewired calls which can change
-/// between sessions, and a remembered claim that silently points at the wrong pad is worse than
-/// asking everyone to press a button again. Which monitor each player sits at is remembered, and
-/// falls back to the main monitor if that one is not connected.
+/// Seats are not remembered. Players join by pressing a button each time, and the XInput slot a
+/// pad gets can change between sessions, so a remembered seat could point at the wrong pad.
 /// </summary>
 internal static class Settings
 {
@@ -39,39 +37,6 @@ internal static class Settings
 
             if (map.TryGetValue("layout", out string? layout) && Enum.TryParse(layout, true, out TileLayout l))
                 options.Layout = l;
-
-            if (map.TryGetValue("players", out string? players)
-                && int.TryParse(players, NumberStyles.Integer, CultureInfo.InvariantCulture, out int count))
-                options.SetPlayerCount(Math.Clamp(count, 1, 4));
-
-            foreach (var seat in options.Seats)
-            {
-                // seat1=KeyboardAndMouse|\\.\DISPLAY2|0
-                if (!map.TryGetValue("seat" + (seat.Index + 1), out string? value))
-                    continue;
-
-                string[] parts = value.Split('|');
-
-                if (parts.Length > 0 && Enum.TryParse(parts[0], true, out SeatInput input))
-                    seat.Input = input;
-
-                if (parts.Length > 1)
-                    seat.Display = parts[1];
-
-                if (parts.Length > 2 && int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out int tile))
-                    seat.Tile = tile;
-            }
-
-            // Only one seat may keep the keyboard, whatever the file says.
-            bool keyboardTaken = false;
-            foreach (var seat in options.Seats.Where(s => s.Input == SeatInput.KeyboardAndMouse))
-            {
-                if (keyboardTaken)
-                    seat.Input = SeatInput.Controller;
-                keyboardTaken = true;
-            }
-
-            SeatLayout.Normalize(options);
         }
         catch
         {
@@ -87,21 +52,12 @@ internal static class Settings
         {
             Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
 
-            var lines = new List<string>
-            {
+            File.WriteAllLines(FilePath,
+            [
                 "gamedir=" + options.GameDir,
-                "mode=" + options.Mode,
-                "layout=" + options.Layout,
-                "players=" + options.Seats.Count.ToString(CultureInfo.InvariantCulture)
-            };
-
-            foreach (var seat in options.Seats)
-            {
-                lines.Add("seat" + (seat.Index + 1) + "=" + seat.Input + "|" + seat.Display + "|"
-                          + seat.Tile.ToString(CultureInfo.InvariantCulture));
-            }
-
-            File.WriteAllLines(FilePath, lines);
+                "mode=" + options.Mode.ToString(),
+                "layout=" + options.Layout.ToString()
+            ]);
         }
         catch
         {
